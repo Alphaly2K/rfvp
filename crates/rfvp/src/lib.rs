@@ -851,6 +851,7 @@ pub mod string {
         feature = "bevy-utils",
         feature = "fontdue-compat",
         feature = "cursor-ani",
+        feature = "external-renderer",
     )
 ))]
 compile_error!("feature `no_std` is an independent core-library build and must not be combined with runtime/backend features");

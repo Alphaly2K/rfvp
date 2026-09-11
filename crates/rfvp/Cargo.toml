@@ -181,6 +181,13 @@ runtime-core-deps = [
 # Existing wgpu renderer. Enabled by default for backward compatibility.
 gpu-render = ["runtime-core-deps", "dep:clap", "dep:winit", "dep:wgpu", "dep:egui", "dep:egui-wgpu", "dep:android-activity", "dep:ndk-context", "random", "cursor-ani", "zlib-flate2", "logging"]
 
+# Backend-neutral render command collection for an external host.
+#
+# This intentionally enables the runtime/resource graph but not wgpu, winit,
+# softbuffer, or any surface owner. The host consumes RenderFrame through
+# host_api and supplies its own TextureBackend/RenderBackend implementation.
+external-renderer = ["runtime-core-deps", "zlib-flate2"]
+
 # CPU/software rendering backend core. This is platform-independent and is used
 # by both desktop software rendering and rfvp-os/UEFI-style builds.
 soft-render-core = ["runtime-core-deps", "uefi-zlib"]

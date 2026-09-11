@@ -4,6 +4,7 @@ use alloc::{vec, vec::Vec};
 #[cfg(feature = "no_std")]
 use core_maths::CoreFloat;
 use glam::{vec2, vec3, vec4, Mat4, Vec2, Vec4};
+use image::GenericImageView;
 
 use crate::host_api::{
     CommandBlendMode, DrawImageCmd, HitProxy, HitProxyTable, PortableTextureDesc, PrimId, RectI16,
@@ -24,7 +25,7 @@ pub(crate) struct HostGraphCacheEntry {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct HostPrimRenderCache {
+pub struct HostPrimRenderCache {
     graphs: Vec<HostGraphCacheEntry>,
     white_ready: bool,
 }
@@ -100,10 +101,11 @@ impl HostPrimRenderCache {
         let width = u16::try_from(width).map_err(|_| RfvpError::CapacityExceeded)?;
         let height = u16::try_from(height).map_err(|_| RfvpError::CapacityExceeded)?;
         let (format, pixels) = match img {
-            crate::DynamicImage::ImageRgba8(img) => (TextureFormat::Rgba8, img.as_raw().as_slice()),
-            crate::DynamicImage::ImageLumaA8(img) => {
+            image::DynamicImage::ImageRgba8(img) => (TextureFormat::Rgba8, img.as_raw().as_slice()),
+            image::DynamicImage::ImageLumaA8(img) => {
                 (TextureFormat::LumaA8, img.as_raw().as_slice())
             }
+            _ => return Err(RfvpError::Unsupported),
         };
         backend.create_texture(
             host_texture_id(graph_id),
@@ -295,7 +297,7 @@ fn vertices_aabb(vertices: &[Vertex2D; 4]) -> RectI16 {
     }
 }
 
-pub(crate) fn render_motion_to_host<B>(
+pub fn render_motion_to_host<B>(
     backend: &mut B,
     cache: &mut HostPrimRenderCache,
     motion: &MotionManager,
