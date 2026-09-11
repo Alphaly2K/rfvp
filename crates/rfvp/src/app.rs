@@ -1168,6 +1168,13 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "external-renderer")]
+    pub fn capture_external_frame(&self) -> crate::rendering::external::ExternalFrame {
+        let gd = gd_read(&self.game_data);
+        self.prim_renderer
+            .record_external_frame(gd.motion_manager.graphs())
+    }
+
     fn set_hud_visible(&mut self, visible: bool) {
         self.hud_visible = visible;
         if let Some(w) = self.hud_window.as_ref() {
@@ -3338,6 +3345,11 @@ pub struct PumpInstance {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl PumpInstance {
+    #[cfg(feature = "external-renderer")]
+    pub fn capture_external_frame(&self) -> crate::rendering::external::ExternalFrame {
+        self.app.capture_external_frame()
+    }
+
     pub fn set_text_hidpi_enabled(&mut self, enabled: bool) {
         self.app.set_text_hidpi_enabled(enabled);
     }

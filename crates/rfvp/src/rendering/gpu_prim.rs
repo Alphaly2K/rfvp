@@ -272,6 +272,163 @@ impl GpuPrimRenderer {
         self.build(resources, motion);
     }
 
+    #[cfg(feature = "external-renderer")]
+    pub(crate) fn record_external_frame(
+        &self,
+        graphs: &[GraphBuff],
+    ) -> crate::rendering::external::ExternalFrame {
+        use crate::host_api::{
+            ColorRgba, CommandBlendMode, DrawImageCmd, PortableTextureDesc, RectI16, RectU16,
+            RenderCommand, RenderFrame, Rgba8, TextureFormat, TextureHandle, Vertex2D,
+        };
+        use crate::rendering::external::{ExternalFrame, RecordedTextureCreate};
+
+        const WHITE_TEXTURE: TextureHandle = TextureHandle(u32::MAX);
+
+        fn rgba8(color: Vec4) -> Rgba8 {
+            Rgba8 {
+                r: (color.x.clamp(0.0, 1.0) * 255.0) as u8,
+                g: (color.y.clamp(0.0, 1.0) * 255.0) as u8,
+                b: (color.z.clamp(0.0, 1.0) * 255.0) as u8,
+                a: (color.w.clamp(0.0, 1.0) * 255.0) as u8,
+            }
+        }
+
+        fn vertex(vertex: PosColTexVertex) -> Vertex2D {
+            Vertex2D {
+                position: [vertex.position.x, vertex.position.y],
+                tex_coord: [
+                    vertex.texture_coordinate.x,
+                    vertex.texture_coordinate.y,
+                ],
+                color: ColorRgba {
+                    r: vertex.color.x,
+                    g: vertex.color.y,
+                    b: vertex.color.z,
+                    a: vertex.color.w,
+                },
+            }
+        }
+
+        fn aabb(vertices: &[Vertex2D; 4]) -> RectI16 {
+            let mut min_x = vertices[0].position[0];
+            let mut max_x = min_x;
+            let mut min_y = vertices[0].position[1];
+            let mut max_y = min_y;
+            for vertex in vertices.iter().skip(1) {
+                min_x = min_x.min(vertex.position[0]);
+                max_x = max_x.max(vertex.position[0]);
+                min_y = min_y.min(vertex.position[1]);
+                max_y = max_y.max(vertex.position[1]);
+            }
+            let x = min_x.floor().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            let y = min_y.floor().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            let right = max_x.ceil().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            let bottom = max_y.ceil().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            RectI16 {
+                x,
+                y,
+                w: right.saturating_sub(x),
+                h: bottom.saturating_sub(y),
+            }
+        }
+
+        let mut textures = Vec::new();
+        let mut commands = Vec::with_capacity(self.draws.len());
+        let mut needs_white = false;
+
+        for item in &self.draws {
+            let start = item.vertex_range.start as usize;
+            let end = item.vertex_range.end as usize;
+            if end > self.vertices.len() || end.saturating_sub(start) < 6 {
+                continue;
+            }
+            let source = &self.vertices[start..end];
+            let vertices = [
+                vertex(source[0]),
+                vertex(source[1]),
+                vertex(source[2]),
+                vertex(source[5]),
+            ];
+            let texture = match item.tex {
+                DrawTextureKey::Graph(graph_id) => {
+                    let handle = TextureHandle(graph_id as u32);
+                    if !textures.iter().any(|texture: &RecordedTextureCreate| {
+                        texture.handle == handle
+                    }) {
+                        let Some(graph) = graphs.get(graph_id as usize) else {
+                            continue;
+                        };
+                        let Some(image) = graph.get_texture().as_ref() else {
+                            continue;
+                        };
+                        let (width, height) = image.dimensions();
+                        let (format, pixels) = match image {
+                            image::DynamicImage::ImageRgba8(image) => {
+                                (TextureFormat::Rgba8, image.as_raw().as_slice())
+                            }
+                            image::DynamicImage::ImageLumaA8(image) => {
+                                (TextureFormat::LumaA8, image.as_raw().as_slice())
+                            }
+                            _ => continue,
+                        };
+                        let Ok(width) = u16::try_from(width) else {
+                            continue;
+                        };
+                        let Ok(height) = u16::try_from(height) else {
+                            continue;
+                        };
+                        textures.push(RecordedTextureCreate {
+                            handle,
+                            desc: PortableTextureDesc {
+                                width,
+                                height,
+                                format,
+                            },
+                            pixels: pixels.to_vec(),
+                        });
+                    }
+                    handle
+                }
+                DrawTextureKey::White => {
+                    needs_white = true;
+                    WHITE_TEXTURE
+                }
+            };
+            let color = rgba8(source[0].color);
+            commands.push(RenderCommand::DrawImage(DrawImageCmd {
+                texture,
+                src: RectU16::default(),
+                dst: aabb(&vertices),
+                color,
+                blend: CommandBlendMode::Normal,
+                effect_id: 0,
+                clip: None,
+                vertices,
+            }));
+        }
+
+        if needs_white {
+            textures.push(RecordedTextureCreate {
+                handle: WHITE_TEXTURE,
+                desc: PortableTextureDesc {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Rgba8,
+                },
+                pixels: vec![255, 255, 255, 255],
+            });
+        }
+
+        ExternalFrame {
+            frame: RenderFrame {
+                commands,
+                hit_proxies: Default::default(),
+            },
+            textures,
+        }
+    }
+
     fn ensure_vb_capacity(&mut self, resources: &GpuCommonResources, needed_vertices: u32) {
         if needed_vertices <= self.vb_capacity {
             return;

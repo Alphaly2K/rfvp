@@ -43,6 +43,12 @@ pub struct RecordingBackend {
     pub end_frame_calls: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalFrame {
+    pub frame: RenderFrame,
+    pub textures: Vec<RecordedTextureCreate>,
+}
+
 impl RecordingBackend {
     pub fn new() -> Self {
         Self::default()
