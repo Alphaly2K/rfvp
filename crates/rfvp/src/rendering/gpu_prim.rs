@@ -386,6 +386,7 @@ impl GpuPrimRenderer {
                                 format,
                             },
                             pixels: pixels.to_vec(),
+                            generation: graph.get_generation(),
                         });
                     }
                     handle
@@ -417,6 +418,7 @@ impl GpuPrimRenderer {
                     format: TextureFormat::Rgba8,
                 },
                 pixels: vec![255, 255, 255, 255],
+                generation: 0,
             });
         }
 

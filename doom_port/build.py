@@ -17,6 +17,8 @@ def main():
     ap.add_argument('iwad',type=Path,nargs='?',help='legally obtained canonical IWAD (required unless --elf-only is used)')
     ap.add_argument('-o','--out',type=Path,default=GENERATED/'doom.hcb')
     ap.add_argument('--keep-build',action='store_true')
+    ap.add_argument('--clang',help='LLVM compiler with the RISC-V target enabled')
+    ap.add_argument('--ld',help='LLVM ELF linker (ld.lld)')
     mode=ap.add_mutually_exclusive_group()
     mode.add_argument('--luax-only',action='store_true',help='stop after generating and validating combined Luax')
     mode.add_argument('--elf-only',action='store_true',help='stop after compiling and auditing the complete RV32IM Doom ELF; IWAD is not required')
@@ -26,6 +28,10 @@ def main():
     GENERATED.mkdir(parents=True,exist_ok=True)
     elf=GENERATED/'doom-rv32.elf';aot=GENERATED/'doom-rv32-aot.luax';wadrom=GENERATED/'doom-iwad-rom.luax';combined=GENERATED/'doom-zero-combined.luax';manifest=GENERATED/'doom-build-manifest.json';source_manifest=GENERATED/'doom-source-manifest.json'
     build=[sys.executable,TOOLS/'build_official_doom.py',ns.source,'-o',elf,'--manifest',source_manifest]
+    if ns.clang:
+        build.extend(['--clang',ns.clang])
+    if ns.ld:
+        build.extend(['--ld',ns.ld])
     if ns.keep_build:build.append('--keep-build')
     run(build)
     run([sys.executable,TOOLS/'audit_elf.py',elf])

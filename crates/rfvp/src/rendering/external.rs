@@ -19,6 +19,7 @@ pub struct RecordedTextureCreate {
     pub handle: TextureHandle,
     pub desc: PortableTextureDesc,
     pub pixels: Vec<u8>,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,7 @@ impl TextureBackend for RecordingBackend {
             handle,
             desc,
             pixels: data.to_vec(),
+            generation: 0,
         });
         Ok(())
     }

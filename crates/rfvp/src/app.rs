@@ -1169,8 +1169,10 @@ impl App {
     }
 
     #[cfg(feature = "external-renderer")]
-    pub fn capture_external_frame(&self) -> crate::rendering::external::ExternalFrame {
+    pub fn capture_external_frame(&mut self) -> crate::rendering::external::ExternalFrame {
         let gd = gd_read(&self.game_data);
+        self.prim_renderer
+            .rebuild(&self.resources, &gd.motion_manager);
         self.prim_renderer
             .record_external_frame(gd.motion_manager.graphs())
     }
@@ -1451,6 +1453,19 @@ impl App {
     ///
     /// Returns `true` if the engine requested exit.
     pub fn host_step(&mut self, dt_ms: u32) -> bool {
+        self.host_step_internal(dt_ms, true)
+    }
+
+    /// Step the engine without submitting RFVP's wgpu surface pass.
+    ///
+    /// External renderer hosts call this while collecting frames for their own
+    /// backend, so the engine does not perform a redundant native GPU present.
+    #[cfg(feature = "external-renderer")]
+    pub fn host_step_without_render(&mut self, dt_ms: u32) -> bool {
+        self.host_step_internal(dt_ms, false)
+    }
+
+    fn host_step_internal(&mut self, dt_ms: u32, render: bool) -> bool {
         // Exit once the main script thread is done and the engine requested shutdown.
         {
             let gd = gd_read(&self.game_data);
@@ -1498,8 +1513,10 @@ impl App {
                 .apply_scene_action(SceneAction::EndFrame, &mut *gd);
         }
 
-        if let Err(e) = self.render_frame() {
-            log::error!("host_step: render_frame failed: {e:?}");
+        if render {
+            if let Err(e) = self.render_frame() {
+                log::error!("host_step: render_frame failed: {e:?}");
+            }
         }
 
         {
@@ -3346,8 +3363,13 @@ pub struct PumpInstance {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl PumpInstance {
     #[cfg(feature = "external-renderer")]
-    pub fn capture_external_frame(&self) -> crate::rendering::external::ExternalFrame {
+    pub fn capture_external_frame(&mut self) -> crate::rendering::external::ExternalFrame {
         self.app.capture_external_frame()
+    }
+
+    #[cfg(feature = "external-renderer")]
+    pub fn host_step_without_render(&mut self, dt_ms: u32) -> bool {
+        self.app.host_step_without_render(dt_ms)
     }
 
     pub fn set_text_hidpi_enabled(&mut self, enabled: bool) {
