@@ -857,6 +857,8 @@ pub mod string {
 compile_error!("feature `no_std` is an independent core-library build and must not be combined with runtime/backend features");
 
 pub mod host_api;
+#[cfg(not(feature = "no_std"))]
+pub mod host_abi;
 
 #[cfg(feature = "no_std")]
 pub mod no_std_core;
