@@ -8,6 +8,7 @@ use crate::host_api::{
     FatalErrorCode, HitProxyTable, PlatformCallbacks, RfvpAudio, RfvpClock, RfvpError, RfvpEvent,
     RfvpFile, RfvpFileInfo, RfvpFileSystem, RfvpHost, RfvpLogLevel, RfvpResult,
 };
+use crate::platform_time::Duration;
 use crate::rendering::prim_commands::{render_motion_to_host, HostPrimRenderCache};
 use crate::script::global::GLOBAL;
 use crate::script::parser::{Nls, Parser};
@@ -367,7 +368,43 @@ impl RfvpCore {
         crate::platform_time::set_host_time_us(now);
         host.audio().tick(elapsed_us)?;
         if let (Some(parser), Some(vm_runner)) = (self.parser.as_mut(), self.vm_runner.as_mut()) {
-            let frame_time_ms = elapsed_us / 1_000;
+            self.game_data
+                .time_mut_ref()
+                .set_external_delta(Duration::from_micros(elapsed_us));
+            let frame_duration = self.game_data.time_mut_ref().frame();
+            let frame_time_ms = (frame_duration.as_micros() as u64).saturating_add(999) / 1_000;
+            self.game_data
+                .timer_manager
+                .tick(frame_time_ms.min(u32::MAX as u64) as u32);
+
+            let mut video_tick_failed = false;
+            {
+                let (video_manager, motion_manager) = (
+                    &mut self.game_data.video_manager,
+                    &mut self.game_data.motion_manager,
+                );
+                if let Err(error) = video_manager.tick(motion_manager) {
+                    host.log(
+                        RfvpLogLevel::Error,
+                        &format!("VideoPlayerManager::tick failed: {error:?}"),
+                    );
+                    video_tick_failed = true;
+                }
+            }
+            if video_tick_failed {
+                let (video_manager, motion_manager) = (
+                    &mut self.game_data.video_manager,
+                    &mut self.game_data.motion_manager,
+                );
+                video_manager.stop(motion_manager);
+                self.game_data.set_halt(false);
+            }
+
+            self.game_data.set_current_thread(0);
+            if self.game_data.get_halt() {
+                self.game_data.set_halt(false);
+            }
+
             if let Err(err) = vm_runner.tick(&mut self.game_data, parser, frame_time_ms) {
                 let message = err.to_string();
                 host.log(RfvpLogLevel::Error, &message);
