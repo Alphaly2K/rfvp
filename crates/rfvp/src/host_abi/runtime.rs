@@ -12,13 +12,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
-use std::time::Instant;
 
 use crate::host_abi::v1::{
     RfvpAudioCommandV1, RfvpColorV1, RfvpDrawCommandV1, RfvpHitProxyV1, RfvpInputEventV1,
-    RfvpRectI32V1, RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1,
-    RfvpTextureCommandV1, RfvpVertexV1,
-    RFVP_AUDIO_CREATE_STREAM, RFVP_AUDIO_DESTROY_STREAM, RFVP_AUDIO_ENCODED_FLAC,
+    RfvpRectI32V1, RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1, RfvpTextureCommandV1,
+    RfvpVertexV1, RFVP_AUDIO_CREATE_STREAM, RFVP_AUDIO_DESTROY_STREAM, RFVP_AUDIO_ENCODED_FLAC,
     RFVP_AUDIO_ENCODED_MP3, RFVP_AUDIO_ENCODED_OGG, RFVP_AUDIO_ENCODED_UNKNOWN,
     RFVP_AUDIO_ENCODED_WAV, RFVP_AUDIO_LOAD_ENCODED, RFVP_AUDIO_MASTER_VOLUME, RFVP_AUDIO_PAUSE,
     RFVP_AUDIO_PLAY, RFVP_AUDIO_RESUME, RFVP_AUDIO_SAMPLE_F32, RFVP_AUDIO_SAMPLE_I16,
@@ -37,22 +35,24 @@ use crate::host_abi::v1::{
     RFVP_NLS_UTF8, RFVP_POINTER_LEFT, RFVP_POINTER_MIDDLE, RFVP_POINTER_RIGHT, RFVP_STATUS_BUSY,
     RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT, RFVP_STATUS_INVALID_DATA,
     RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND, RFVP_STATUS_NO_COMMAND,
-    RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RFVP_STATUS_OUT_OF_MEMORY, RFVP_STATUS_UNSUPPORTED,
-    RFVP_TEXTURE_CREATE, RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8,
-    RFVP_TEXTURE_FORMAT_RGBA8,
+    RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RFVP_STATUS_UNSUPPORTED, RFVP_TEXTURE_CREATE,
+    RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8, RFVP_TEXTURE_FORMAT_RGBA8,
 };
 use crate::host_abi::{Handle, HandleRegistry};
 use crate::host_api::{
-    AudioParams, AudioSampleFormat, AudioStreamDesc, AudioStreamId, BlendMode, ColorRgba, CommandBlendMode,
-    DrawGlyphCmd, DrawImageCmd, DrawSolidCommand, DrawSpriteCommand, EncodedAudioKind,
-    InputModifiers, KeyCode, PixelFormat, PointerButton, PortableTextureDesc, RectI16, RectU16,
-    RenderBackend, RenderCommand, RfvpAudio, RfvpClock, RfvpError, RfvpEvent, RfvpFile,
-    RfvpFileInfo, RfvpFileKind, RfvpFileSystem, RfvpHost, RfvpLogLevel, RfvpRenderer, RfvpResult,
-    Rgba8, TextureBackend, TextureDesc, TextureFormat, TextureHandle, TextureId, TextureRect,
-    Vertex2D,
+    AudioParams, AudioSampleFormat, AudioStreamDesc, AudioStreamId, BlendMode, ColorRgba,
+    CommandBlendMode, DrawGlyphCmd, DrawImageCmd, DrawSolidCommand, DrawSpriteCommand,
+    EncodedAudioKind, InputModifiers, KeyCode, PixelFormat, PointerButton, PortableTextureDesc,
+    RectI16, RectU16, RenderBackend, RenderCommand, RfvpAudio, RfvpClock, RfvpError, RfvpEvent,
+    RfvpFile, RfvpFileInfo, RfvpFileKind, RfvpFileSystem, RfvpHost, RfvpLogLevel, RfvpRenderer,
+    RfvpResult, Rgba8, TextureBackend, TextureDesc, TextureFormat, TextureHandle, TextureId,
+    TextureRect, Vertex2D,
 };
 use crate::no_std_core::{RfvpBootConfig, RfvpCore, RfvpCoreConfig};
-use crate::rendering::external::{ExternalFrame, RecordingBackend};
+use crate::rendering::external::{
+    ExternalFrame, RecordedTextureCommand, RecordedTextureCreate, RecordedTextureUpdate,
+    RecordingBackend,
+};
 use crate::rfvp_audio::AudioCommand;
 use crate::script::parser::Nls;
 
@@ -93,7 +93,7 @@ struct HostFrame {
     commands: Vec<RfvpDrawCommandV1>,
     textures: Vec<RfvpTextureCommandV1>,
     hit_proxies: Vec<RfvpHitProxyV1>,
-    texture_pixels: Vec<Vec<u8>>,
+    _texture_pixels: Vec<Vec<u8>>,
 }
 
 const MAX_PENDING_AUDIO_COMMANDS: usize = 1024;
@@ -158,14 +158,17 @@ impl RfvpHost for HostPlatform {
 struct HostRenderer {
     backend: RecordingBackend,
     generations: HashMap<TextureHandle, u64>,
+    textures: HashMap<TextureHandle, RecordedTextureCreate>,
     white_ready: bool,
 }
 
 impl HostRenderer {
     fn take_external_frame(&mut self) -> ExternalFrame {
+        let texture_commands = std::mem::take(&mut self.backend.texture_commands);
         ExternalFrame {
             frame: std::mem::take(&mut self.backend.frame),
             textures: std::mem::take(&mut self.backend.creates),
+            texture_commands,
         }
     }
 
@@ -190,13 +193,9 @@ impl HostRenderer {
             &[255, 255, 255, 255],
         )?;
         let generation = self.next_generation(handle);
-        if let Some(texture) = self
-            .backend
-            .creates
-            .iter_mut()
-            .find(|texture| texture.handle == handle)
-        {
+        if let Some(texture) = self.backend.creates.last_mut() {
             texture.generation = generation;
+            self.textures.insert(handle, texture.clone());
         }
         self.white_ready = true;
         Ok(())
@@ -220,10 +219,8 @@ impl HostRenderer {
             dst: RectI16 {
                 x: min_x.floor().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
                 y: min_y.floor().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
-                w: (max_x.ceil() - min_x.floor())
-                    .clamp(0.0, i16::MAX as f32) as i16,
-                h: (max_y.ceil() - min_y.floor())
-                    .clamp(0.0, i16::MAX as f32) as i16,
+                w: (max_x.ceil() - min_x.floor()).clamp(0.0, i16::MAX as f32) as i16,
+                h: (max_y.ceil() - min_y.floor()).clamp(0.0, i16::MAX as f32) as i16,
             },
             color: rgba8(vertices[0].color),
             blend: command_blend(command.blend),
@@ -236,7 +233,8 @@ impl HostRenderer {
             }),
             vertices,
         };
-        self.backend.submit_commands(&[RenderCommand::DrawImage(draw)])
+        self.backend
+            .submit_commands(&[RenderCommand::DrawImage(draw)])
     }
 }
 
@@ -264,13 +262,9 @@ impl RfvpRenderer for HostRenderer {
             pixels.unwrap_or(&empty),
         )?;
         let generation = self.next_generation(handle);
-        if let Some(texture) = self
-            .backend
-            .creates
-            .iter_mut()
-            .find(|texture| texture.handle == handle)
-        {
+        if let Some(texture) = self.backend.creates.last_mut() {
             texture.generation = generation;
+            self.textures.insert(handle, texture.clone());
         }
         Ok(())
     }
@@ -283,12 +277,7 @@ impl RfvpRenderer for HostRenderer {
     ) -> RfvpResult<()> {
         let handle = TextureHandle(id.0);
         let generation = self.next_generation(handle);
-        let Some(texture) = self
-            .backend
-            .creates
-            .iter_mut()
-            .find(|texture| texture.handle == handle)
-        else {
+        let Some(texture) = self.textures.get_mut(&handle) else {
             return Err(RfvpError::NotFound);
         };
         let row_bytes = texture.desc.width as usize
@@ -303,7 +292,9 @@ impl RfvpRenderer for HostRenderer {
                 TextureFormat::LumaA8 => 2,
                 _ => return Err(RfvpError::Unsupported),
             };
-        if rect.width == 0 || rect.height == 0 || pixels.len() < rect_row_bytes * rect.height as usize
+        if rect.width == 0
+            || rect.height == 0
+            || pixels.len() < rect_row_bytes * rect.height as usize
         {
             return Err(RfvpError::InvalidArgument);
         }
@@ -314,8 +305,7 @@ impl RfvpRenderer for HostRenderer {
                 TextureFormat::LumaA8 => 2,
                 _ => return Err(RfvpError::Unsupported),
             };
-            let dst_offset =
-                (rect.y as usize + row) * row_bytes + rect.x as usize * pixel_bytes;
+            let dst_offset = (rect.y as usize + row) * row_bytes + rect.x as usize * pixel_bytes;
             let dst = texture
                 .pixels
                 .get_mut(dst_offset..dst_offset + rect_row_bytes)
@@ -323,12 +313,21 @@ impl RfvpRenderer for HostRenderer {
             dst.copy_from_slice(src);
         }
         texture.generation = generation;
+        self.backend.record_texture_update(RecordedTextureUpdate {
+            handle,
+            rect,
+            format: texture.desc.format,
+            pixels: pixels.to_vec(),
+            generation,
+        });
         Ok(())
     }
 
     fn destroy_texture(&mut self, id: TextureId) {
-        self.backend.destroy_texture(TextureHandle(id.0));
-        self.generations.remove(&TextureHandle(id.0));
+        let handle = TextureHandle(id.0);
+        self.backend.destroy_texture(handle);
+        self.generations.remove(&handle);
+        self.textures.remove(&handle);
     }
 
     fn begin_frame(
@@ -404,8 +403,7 @@ impl RfvpAudio for HostAudio {
     }
 
     fn create_stream(&mut self, id: AudioStreamId, desc: AudioStreamDesc) -> RfvpResult<()> {
-        self.commands
-            .push(AudioCommand::CreateStream { id, desc });
+        self.commands.push(AudioCommand::CreateStream { id, desc });
         Ok(())
     }
 
@@ -425,12 +423,7 @@ impl RfvpAudio for HostAudio {
         Ok(())
     }
 
-    fn play(
-        &mut self,
-        id: AudioStreamId,
-        params: AudioParams,
-        fade_in_ms: u32,
-    ) -> RfvpResult<()> {
+    fn play(&mut self, id: AudioStreamId, params: AudioParams, fade_in_ms: u32) -> RfvpResult<()> {
         self.commands.push(AudioCommand::Play {
             id,
             params,
@@ -440,8 +433,7 @@ impl RfvpAudio for HostAudio {
     }
 
     fn stop(&mut self, id: AudioStreamId, fade_ms: u32) -> RfvpResult<()> {
-        self.commands
-            .push(AudioCommand::Stop { id, fade_ms });
+        self.commands.push(AudioCommand::Stop { id, fade_ms });
         Ok(())
     }
 
@@ -456,14 +448,12 @@ impl RfvpAudio for HostAudio {
     }
 
     fn set_params(&mut self, id: AudioStreamId, params: AudioParams) -> RfvpResult<()> {
-        self.commands
-            .push(AudioCommand::SetParams { id, params });
+        self.commands.push(AudioCommand::SetParams { id, params });
         Ok(())
     }
 
     fn set_master_volume(&mut self, volume: f32) -> RfvpResult<()> {
-        self.commands
-            .push(AudioCommand::MasterVolume { volume });
+        self.commands.push(AudioCommand::MasterVolume { volume });
         Ok(())
     }
 
@@ -477,20 +467,24 @@ impl RfvpAudio for HostAudio {
 }
 
 struct HostClock {
-    start: Instant,
+    now_us: u64,
 }
 
 impl HostClock {
     fn new() -> Self {
-        Self {
-            start: Instant::now(),
-        }
+        Self { now_us: 0 }
+    }
+
+    fn advance_ms(&mut self, delta_ms: u32) {
+        self.now_us = self
+            .now_us
+            .saturating_add(u64::from(delta_ms).saturating_mul(1_000));
     }
 }
 
 impl RfvpClock for HostClock {
     fn ticks_us(&mut self) -> u64 {
-        self.start.elapsed().as_micros().min(u64::MAX as u128) as u64
+        self.now_us
     }
 }
 
@@ -888,47 +882,97 @@ fn texture_format(format: TextureFormat) -> Option<u32> {
     }
 }
 
+fn texture_pixel_bytes(format: TextureFormat) -> u32 {
+    match format {
+        TextureFormat::Rgba8 => 4,
+        TextureFormat::LumaA8 => 2,
+        _ => 0,
+    }
+}
+
 impl HostFrame {
     fn new(external: ExternalFrame, width: u32, height: u32, runtime: u64) -> Self {
-        let texture_pixels: Vec<Vec<u8>> = external
-            .textures
-            .iter()
-            .map(|texture| texture.pixels.clone())
-            .collect();
-
-        let textures = external
-            .textures
-            .iter()
-            .zip(texture_pixels.iter())
-            .filter_map(|(texture, pixels)| {
-                let format = texture_format(texture.desc.format)?;
-                Some(RfvpTextureCommandV1 {
-                    struct_size: size_of::<RfvpTextureCommandV1>() as u32,
-                    kind: RFVP_TEXTURE_CREATE,
-                    texture_id: texture.handle.0,
-                    format,
-                    width: texture.desc.width as u32,
-                    height: texture.desc.height as u32,
-                    mip_count: 1,
-                    row_bytes: texture.desc.width as u32
-                        * match texture.desc.format {
-                            TextureFormat::Rgba8 => 4,
-                            TextureFormat::LumaA8 => 2,
-                            _ => 0,
+        let mut texture_pixels = Vec::new();
+        let mut textures = Vec::new();
+        for command in &external.texture_commands {
+            let pixels = match command {
+                RecordedTextureCommand::Create(texture) => texture.pixels.clone(),
+                RecordedTextureCommand::Update(update) => update.pixels.clone(),
+                RecordedTextureCommand::Destroy(_) => Vec::new(),
+            };
+            let pixels_ptr = pixels.as_ptr();
+            let pixels_size = pixels.len();
+            let command = match command {
+                RecordedTextureCommand::Create(texture) => {
+                    let Some(format) = texture_format(texture.desc.format) else {
+                        continue;
+                    };
+                    RfvpTextureCommandV1 {
+                        struct_size: size_of::<RfvpTextureCommandV1>() as u32,
+                        kind: RFVP_TEXTURE_CREATE,
+                        texture_id: texture.handle.0,
+                        format,
+                        width: texture.desc.width as u32,
+                        height: texture.desc.height as u32,
+                        mip_count: 1,
+                        row_bytes: texture.desc.width as u32
+                            * texture_pixel_bytes(texture.desc.format),
+                        rect: RfvpRectI32V1 {
+                            x: 0,
+                            y: 0,
+                            width: texture.desc.width as i32,
+                            height: texture.desc.height as i32,
                         },
+                        generation: texture.generation,
+                        pixels: pixels_ptr,
+                        pixels_size,
+                        reserved: [0; 2],
+                    }
+                }
+                RecordedTextureCommand::Update(update) => RfvpTextureCommandV1 {
+                    struct_size: size_of::<RfvpTextureCommandV1>() as u32,
+                    kind: crate::host_abi::v1::RFVP_TEXTURE_UPDATE,
+                    texture_id: update.handle.0,
+                    format: texture_format(update.format).unwrap_or_default(),
+                    width: update.rect.width,
+                    height: update.rect.height,
+                    mip_count: 1,
+                    row_bytes: update.rect.width * texture_pixel_bytes(update.format),
+                    rect: RfvpRectI32V1 {
+                        x: update.rect.x as i32,
+                        y: update.rect.y as i32,
+                        width: update.rect.width as i32,
+                        height: update.rect.height as i32,
+                    },
+                    generation: update.generation,
+                    pixels: pixels_ptr,
+                    pixels_size,
+                    reserved: [0; 2],
+                },
+                RecordedTextureCommand::Destroy(destroy) => RfvpTextureCommandV1 {
+                    struct_size: size_of::<RfvpTextureCommandV1>() as u32,
+                    kind: crate::host_abi::v1::RFVP_TEXTURE_DESTROY,
+                    texture_id: destroy.handle.0,
+                    format: 0,
+                    width: 0,
+                    height: 0,
+                    mip_count: 0,
+                    row_bytes: 0,
                     rect: RfvpRectI32V1 {
                         x: 0,
                         y: 0,
-                        width: texture.desc.width as i32,
-                        height: texture.desc.height as i32,
+                        width: 0,
+                        height: 0,
                     },
-                    generation: texture.generation,
-                    pixels: pixels.as_ptr(),
-                    pixels_size: pixels.len(),
+                    generation: 0,
+                    pixels: std::ptr::null(),
+                    pixels_size: 0,
                     reserved: [0; 2],
-                })
-            })
-            .collect();
+                },
+            };
+            texture_pixels.push(pixels);
+            textures.push(command);
+        }
 
         let mut commands = Vec::new();
         let mut active_clip = None;
@@ -975,7 +1019,7 @@ impl HostFrame {
             commands,
             textures,
             hit_proxies,
-            texture_pixels,
+            _texture_pixels: texture_pixels,
         }
     }
 }
@@ -1138,10 +1182,7 @@ fn key_code(code: u32) -> KeyCode {
     }
 }
 
-fn input_event(
-    event: &RfvpInputEventV1,
-    virtual_size: (u32, u32),
-) -> Result<RfvpEvent, i32> {
+fn input_event(event: &RfvpInputEventV1, virtual_size: (u32, u32)) -> Result<RfvpEvent, i32> {
     if (event.struct_size as usize) < size_of::<RfvpInputEventV1>() {
         return Err(RFVP_STATUS_INVALID_ARGUMENT);
     }
@@ -1289,12 +1330,7 @@ pub unsafe extern "C" fn rfvp_resources_mount_directory(
             Ok(_) => return RFVP_STATUS_INVALID_ARGUMENT,
             Err(status) => return status,
         };
-        let exists = with_state(|state| {
-            state
-                .resources
-                .get(Handle::from_raw(resources))
-                .is_some()
-        });
+        let exists = with_state(|state| state.resources.get(Handle::from_raw(resources)).is_some());
         if !exists {
             return RFVP_STATUS_INVALID_HANDLE;
         }
@@ -1444,6 +1480,7 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
                 return RFVP_STATUS_INVALID_HANDLE;
             };
             let delta_ms = delta_ms.max(1);
+            runtime.host.clock.advance_ms(delta_ms);
             if let Err(error) = runtime.core.tick(&mut runtime.host) {
                 log::error!("rfvp_runtime_step failed: {error:?}");
                 return RFVP_STATUS_ENGINE;
@@ -1470,13 +1507,15 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
 }
 
 pub unsafe extern "C" fn rfvp_runtime_is_exit_requested(runtime: u64) -> i32 {
-    guard_i32(|| with_state(|state| {
-        state
-            .runtimes
-            .get(Handle::from_raw(runtime))
-            .map(|runtime| if runtime.exit_requested { 1 } else { 0 })
-            .unwrap_or(0)
-    }))
+    guard_i32(|| {
+        with_state(|state| {
+            state
+                .runtimes
+                .get(Handle::from_raw(runtime))
+                .map(|runtime| if runtime.exit_requested { 1 } else { 0 })
+                .unwrap_or(0)
+        })
+    })
 }
 
 pub unsafe extern "C" fn rfvp_runtime_push_input(
@@ -1545,19 +1584,21 @@ pub unsafe extern "C" fn rfvp_runtime_poll_audio_command(
 }
 
 pub unsafe extern "C" fn rfvp_runtime_capabilities(runtime: u64) -> u64 {
-    guard_u64(|| with_state(|state| {
-        state
-            .runtimes
-            .get(Handle::from_raw(runtime))
-            .map(|_| {
-                RFVP_CAPABILITY_TEXTURES
-                    | RFVP_CAPABILITY_DRAW_IMAGE
-                    | RFVP_CAPABILITY_DRAW_GLYPH
-                    | RFVP_CAPABILITY_HIT_PROXIES
-                    | RFVP_CAPABILITY_AUDIO_COMMANDS
-            })
-            .unwrap_or(0)
-    }))
+    guard_u64(|| {
+        with_state(|state| {
+            state
+                .runtimes
+                .get(Handle::from_raw(runtime))
+                .map(|_| {
+                    RFVP_CAPABILITY_TEXTURES
+                        | RFVP_CAPABILITY_DRAW_IMAGE
+                        | RFVP_CAPABILITY_DRAW_GLYPH
+                        | RFVP_CAPABILITY_HIT_PROXIES
+                        | RFVP_CAPABILITY_AUDIO_COMMANDS
+                })
+                .unwrap_or(0)
+        })
+    })
 }
 
 pub unsafe extern "C" fn rfvp_runtime_acquire_frame(runtime: u64, out_frame: *mut u64) -> i32 {
@@ -1745,15 +1786,13 @@ mod tests {
         assert_ne!(resources, RFVP_INVALID_HANDLE);
 
         let path = b"/rfvp/does-not-exist";
-        let status = unsafe {
-            rfvp_resources_mount_directory(resources, path.as_ptr(), path.len())
-        };
+        let status =
+            unsafe { rfvp_resources_mount_directory(resources, path.as_ptr(), path.len()) };
         assert_eq!(status, RFVP_STATUS_NOT_FOUND);
 
         unsafe { rfvp_resources_destroy(resources) };
-        let status = unsafe {
-            rfvp_resources_mount_directory(resources, path.as_ptr(), path.len())
-        };
+        let status =
+            unsafe { rfvp_resources_mount_directory(resources, path.as_ptr(), path.len()) };
         assert_eq!(status, RFVP_STATUS_INVALID_HANDLE);
     }
 

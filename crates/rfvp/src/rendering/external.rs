@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use crate::host_api::{
     PortableTextureDesc, RenderBackend, RenderCommand, RenderFrame, RfvpError, TextureBackend,
-    TextureHandle, TextureRect,
+    TextureFormat, TextureHandle, TextureRect,
 };
 
 pub use super::prim_commands::{render_motion_to_host, HostPrimRenderCache};
@@ -26,7 +26,9 @@ pub struct RecordedTextureCreate {
 pub struct RecordedTextureUpdate {
     pub handle: TextureHandle,
     pub rect: TextureRect,
+    pub format: TextureFormat,
     pub pixels: Vec<u8>,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,11 +36,19 @@ pub struct RecordedTextureDestroy {
     pub handle: TextureHandle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordedTextureCommand {
+    Create(RecordedTextureCreate),
+    Update(RecordedTextureUpdate),
+    Destroy(RecordedTextureDestroy),
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecordingBackend {
     pub creates: Vec<RecordedTextureCreate>,
     pub updates: Vec<RecordedTextureUpdate>,
     pub destroys: Vec<RecordedTextureDestroy>,
+    pub texture_commands: Vec<RecordedTextureCommand>,
     pub frame: RenderFrame,
     pub begin_frame_calls: usize,
     pub end_frame_calls: usize,
@@ -48,6 +58,7 @@ pub struct RecordingBackend {
 pub struct ExternalFrame {
     pub frame: RenderFrame,
     pub textures: Vec<RecordedTextureCreate>,
+    pub texture_commands: Vec<RecordedTextureCommand>,
 }
 
 impl RecordingBackend {
@@ -69,17 +80,31 @@ impl TextureBackend for RecordingBackend {
         desc: PortableTextureDesc,
         data: &[u8],
     ) -> Result<(), Self::Error> {
-        self.creates.push(RecordedTextureCreate {
+        let create = RecordedTextureCreate {
             handle,
             desc,
             pixels: data.to_vec(),
             generation: 0,
-        });
+        };
+        self.creates.push(create.clone());
+        self.texture_commands
+            .push(RecordedTextureCommand::Create(create));
         Ok(())
     }
 
     fn destroy_texture(&mut self, handle: TextureHandle) {
-        self.destroys.push(RecordedTextureDestroy { handle });
+        let destroy = RecordedTextureDestroy { handle };
+        self.destroys.push(destroy);
+        self.texture_commands
+            .push(RecordedTextureCommand::Destroy(destroy));
+    }
+}
+
+impl RecordingBackend {
+    pub fn record_texture_update(&mut self, update: RecordedTextureUpdate) {
+        self.updates.push(update.clone());
+        self.texture_commands
+            .push(RecordedTextureCommand::Update(update));
     }
 }
 
@@ -155,6 +180,7 @@ mod tests {
         assert_eq!(backend.creates.len(), 1);
         assert_eq!(backend.frame.commands.len(), 1);
         assert_eq!(backend.destroys.len(), 1);
+        assert_eq!(backend.texture_commands.len(), 2);
         assert_eq!(backend.begin_frame_calls, 1);
         assert_eq!(backend.end_frame_calls, 1);
     }
