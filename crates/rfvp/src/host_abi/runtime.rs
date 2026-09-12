@@ -15,32 +15,41 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use crate::host_abi::v1::{
-    RfvpAudioCommandV1, RfvpColorV1, RfvpDrawCommandV1, RfvpHitProxyV1, RfvpRectI32V1,
-    RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1, RfvpTextureCommandV1, RfvpVertexV1,
+    RfvpAudioCommandV1, RfvpColorV1, RfvpDrawCommandV1, RfvpHitProxyV1, RfvpInputEventV1,
+    RfvpRectI32V1, RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1,
+    RfvpTextureCommandV1, RfvpVertexV1,
     RFVP_AUDIO_CREATE_STREAM, RFVP_AUDIO_DESTROY_STREAM, RFVP_AUDIO_ENCODED_FLAC,
     RFVP_AUDIO_ENCODED_MP3, RFVP_AUDIO_ENCODED_OGG, RFVP_AUDIO_ENCODED_UNKNOWN,
     RFVP_AUDIO_ENCODED_WAV, RFVP_AUDIO_LOAD_ENCODED, RFVP_AUDIO_MASTER_VOLUME, RFVP_AUDIO_PAUSE,
     RFVP_AUDIO_PLAY, RFVP_AUDIO_RESUME, RFVP_AUDIO_SAMPLE_F32, RFVP_AUDIO_SAMPLE_I16,
     RFVP_AUDIO_SET_PARAMS, RFVP_AUDIO_STOP, RFVP_AUDIO_SUBMIT_F32, RFVP_AUDIO_SUBMIT_I16,
-    RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY,
-    RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT, RFVP_CAPABILITY_DRAW_GLYPH,
-    RFVP_CAPABILITY_DRAW_IMAGE, RFVP_CAPABILITY_HIT_PROXIES, RFVP_CAPABILITY_TEXTURES,
-    RFVP_DRAW_FLAG_HAS_CLIP, RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE,
-    RFVP_INVALID_HANDLE, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK, RFVP_NLS_SHIFT_JIS, RFVP_NLS_UTF8,
-    RFVP_STATUS_BUSY, RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT, RFVP_STATUS_INVALID_DATA,
-    RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND, RFVP_STATUS_NO_COMMAND, RFVP_STATUS_NO_FRAME,
-    RFVP_STATUS_OK, RFVP_STATUS_OUT_OF_MEMORY, RFVP_STATUS_UNSUPPORTED, RFVP_TEXTURE_CREATE,
-    RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8, RFVP_TEXTURE_FORMAT_RGBA8,
-    RFVP_CAPABILITY_AUDIO_COMMANDS,
+    RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY, RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT,
+    RFVP_CAPABILITY_AUDIO_COMMANDS, RFVP_CAPABILITY_DRAW_GLYPH, RFVP_CAPABILITY_DRAW_IMAGE,
+    RFVP_CAPABILITY_HIT_PROXIES, RFVP_CAPABILITY_TEXTURES, RFVP_DRAW_FLAG_HAS_CLIP,
+    RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE, RFVP_INPUT_FOCUS,
+    RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN, RFVP_INPUT_PHASE_MOVE, RFVP_INPUT_PHASE_REPEAT,
+    RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON, RFVP_INPUT_POINTER_MOVE, RFVP_INPUT_QUIT,
+    RFVP_INPUT_TEXT, RFVP_INPUT_TOUCH, RFVP_INPUT_WHEEL, RFVP_INVALID_HANDLE, RFVP_KEY_ALT,
+    RFVP_KEY_BACKSPACE, RFVP_KEY_CONTROL, RFVP_KEY_DELETE, RFVP_KEY_DOWN, RFVP_KEY_END,
+    RFVP_KEY_ESCAPE, RFVP_KEY_HOME, RFVP_KEY_INSERT, RFVP_KEY_LEFT, RFVP_KEY_PAGE_DOWN,
+    RFVP_KEY_PAGE_UP, RFVP_KEY_RETURN, RFVP_KEY_RIGHT, RFVP_KEY_SHIFT, RFVP_KEY_SPACE,
+    RFVP_KEY_TAB, RFVP_KEY_UP, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK, RFVP_NLS_SHIFT_JIS,
+    RFVP_NLS_UTF8, RFVP_POINTER_LEFT, RFVP_POINTER_MIDDLE, RFVP_POINTER_RIGHT, RFVP_STATUS_BUSY,
+    RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT, RFVP_STATUS_INVALID_DATA,
+    RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND, RFVP_STATUS_NO_COMMAND,
+    RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RFVP_STATUS_OUT_OF_MEMORY, RFVP_STATUS_UNSUPPORTED,
+    RFVP_TEXTURE_CREATE, RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8,
+    RFVP_TEXTURE_FORMAT_RGBA8,
 };
 use crate::host_abi::{Handle, HandleRegistry};
 use crate::host_api::{
     AudioParams, AudioSampleFormat, AudioStreamDesc, AudioStreamId, BlendMode, ColorRgba, CommandBlendMode,
     DrawGlyphCmd, DrawImageCmd, DrawSolidCommand, DrawSpriteCommand, EncodedAudioKind,
-    PixelFormat, PortableTextureDesc, RectI16, RectU16, RenderCommand, RfvpAudio, RfvpClock,
-    RfvpError, RfvpFile, RfvpFileInfo, RfvpFileKind, RfvpFileSystem, RfvpHost, RfvpLogLevel,
-    RfvpRenderer, RfvpResult, Rgba8, RenderBackend, TextureBackend, TextureDesc, TextureFormat,
-    TextureHandle, TextureId, TextureRect, Vertex2D,
+    InputModifiers, KeyCode, PixelFormat, PointerButton, PortableTextureDesc, RectI16, RectU16,
+    RenderBackend, RenderCommand, RfvpAudio, RfvpClock, RfvpError, RfvpEvent, RfvpFile,
+    RfvpFileInfo, RfvpFileKind, RfvpFileSystem, RfvpHost, RfvpLogLevel, RfvpRenderer, RfvpResult,
+    Rgba8, TextureBackend, TextureDesc, TextureFormat, TextureHandle, TextureId, TextureRect,
+    Vertex2D,
 };
 use crate::no_std_core::{RfvpBootConfig, RfvpCore, RfvpCoreConfig};
 use crate::rendering::external::{ExternalFrame, RecordingBackend};
@@ -1093,6 +1102,130 @@ fn pending_audio_command(command: AudioCommand) -> PendingAudioCommand {
     }
 }
 
+fn pointer_button(code: u32) -> Option<PointerButton> {
+    match code {
+        RFVP_POINTER_LEFT => Some(PointerButton::Left),
+        RFVP_POINTER_RIGHT => Some(PointerButton::Right),
+        RFVP_POINTER_MIDDLE => Some(PointerButton::Middle),
+        _ => None,
+    }
+}
+
+fn key_code(code: u32) -> KeyCode {
+    match code {
+        RFVP_KEY_ESCAPE => KeyCode::Escape,
+        RFVP_KEY_RETURN => KeyCode::Return,
+        RFVP_KEY_SPACE => KeyCode::Space,
+        RFVP_KEY_BACKSPACE => KeyCode::Backspace,
+        RFVP_KEY_TAB => KeyCode::Tab,
+        RFVP_KEY_LEFT => KeyCode::Left,
+        RFVP_KEY_RIGHT => KeyCode::Right,
+        RFVP_KEY_UP => KeyCode::Up,
+        RFVP_KEY_DOWN => KeyCode::Down,
+        RFVP_KEY_PAGE_UP => KeyCode::PageUp,
+        RFVP_KEY_PAGE_DOWN => KeyCode::PageDown,
+        RFVP_KEY_HOME => KeyCode::Home,
+        RFVP_KEY_END => KeyCode::End,
+        RFVP_KEY_INSERT => KeyCode::Insert,
+        RFVP_KEY_DELETE => KeyCode::Delete,
+        RFVP_KEY_SHIFT => KeyCode::Shift,
+        RFVP_KEY_CONTROL => KeyCode::Control,
+        RFVP_KEY_ALT => KeyCode::Alt,
+        value if char::from_u32(value).is_some_and(|ch| !ch.is_control()) => {
+            KeyCode::Character(char::from_u32(value).expect("validated unicode scalar"))
+        }
+        value => KeyCode::Unknown(value),
+    }
+}
+
+fn input_event(
+    event: &RfvpInputEventV1,
+    virtual_size: (u32, u32),
+) -> Result<RfvpEvent, i32> {
+    if (event.struct_size as usize) < size_of::<RfvpInputEventV1>() {
+        return Err(RFVP_STATUS_INVALID_ARGUMENT);
+    }
+    let modifiers = InputModifiers::from_bits(event.modifiers);
+    let event = match event.kind {
+        RFVP_INPUT_KEY => match event.phase {
+            RFVP_INPUT_PHASE_DOWN | RFVP_INPUT_PHASE_REPEAT => RfvpEvent::KeyDown {
+                key: key_code(event.code),
+                repeat: event.phase == RFVP_INPUT_PHASE_REPEAT,
+                modifiers,
+            },
+            RFVP_INPUT_PHASE_UP => RfvpEvent::KeyUp {
+                key: key_code(event.code),
+                modifiers,
+            },
+            _ => return Err(RFVP_STATUS_INVALID_ARGUMENT),
+        },
+        RFVP_INPUT_TEXT => {
+            let Some(ch) = char::from_u32(event.code) else {
+                return Err(RFVP_STATUS_INVALID_ARGUMENT);
+            };
+            RfvpEvent::TextInput { ch }
+        }
+        RFVP_INPUT_POINTER_MOVE => RfvpEvent::PointerMove {
+            x: event.x,
+            y: event.y,
+            in_screen: event.x >= 0
+                && event.y >= 0
+                && event.x < virtual_size.0 as i32
+                && event.y < virtual_size.1 as i32,
+        },
+        RFVP_INPUT_POINTER_BUTTON => {
+            let Some(button) = pointer_button(event.code) else {
+                return Err(RFVP_STATUS_INVALID_ARGUMENT);
+            };
+            match event.phase {
+                RFVP_INPUT_PHASE_DOWN => RfvpEvent::PointerDown {
+                    button,
+                    x: event.x,
+                    y: event.y,
+                },
+                RFVP_INPUT_PHASE_UP => RfvpEvent::PointerUp {
+                    button,
+                    x: event.x,
+                    y: event.y,
+                },
+                _ => return Err(RFVP_STATUS_INVALID_ARGUMENT),
+            }
+        }
+        RFVP_INPUT_WHEEL => RfvpEvent::Wheel {
+            delta_x: event.x,
+            delta_y: event.y,
+        },
+        RFVP_INPUT_TOUCH => match event.phase {
+            RFVP_INPUT_PHASE_DOWN => RfvpEvent::TouchDown {
+                id: event.id,
+                x: event.x,
+                y: event.y,
+            },
+            RFVP_INPUT_PHASE_MOVE => RfvpEvent::TouchMove {
+                id: event.id,
+                x: event.x,
+                y: event.y,
+            },
+            RFVP_INPUT_PHASE_UP => RfvpEvent::TouchUp {
+                id: event.id,
+                x: event.x,
+                y: event.y,
+            },
+            _ => return Err(RFVP_STATUS_INVALID_ARGUMENT),
+        },
+        RFVP_INPUT_FOCUS => {
+            if event.phase == 0 {
+                RfvpEvent::FocusLost
+            } else {
+                RfvpEvent::FocusGained
+            }
+        }
+        RFVP_INPUT_QUIT => RfvpEvent::Quit,
+        _ => return Err(RFVP_STATUS_INVALID_ARGUMENT),
+    };
+    Ok(event)
+}
+
 pub unsafe extern "C" fn rfvp_resources_create(
     config: *const RfvpResourcesConfigV1,
     out_resources: *mut u64,
@@ -1344,6 +1477,42 @@ pub unsafe extern "C" fn rfvp_runtime_is_exit_requested(runtime: u64) -> i32 {
             .map(|runtime| if runtime.exit_requested { 1 } else { 0 })
             .unwrap_or(0)
     }))
+}
+
+pub unsafe extern "C" fn rfvp_runtime_push_input(
+    runtime: u64,
+    events: *const RfvpInputEventV1,
+    event_count: usize,
+) -> i32 {
+    guard_status(|| {
+        if events.is_null() && event_count != 0 {
+            return RFVP_STATUS_INVALID_ARGUMENT;
+        }
+        if event_count > 4096 {
+            return RFVP_STATUS_INVALID_ARGUMENT;
+        }
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            let virtual_size = (
+                runtime.core.config().virtual_width,
+                runtime.core.config().virtual_height,
+            );
+            for index in 0..event_count {
+                let event = unsafe { &*events.add(index) };
+                let event = match input_event(event, virtual_size) {
+                    Ok(event) => event,
+                    Err(status) => return status,
+                };
+                if let Err(error) = runtime.core.push_event(event) {
+                    log::warn!("rfvp_runtime_push_input rejected event: {error:?}");
+                    return RFVP_STATUS_BUSY;
+                }
+            }
+            RFVP_STATUS_OK
+        })
+    })
 }
 
 pub unsafe extern "C" fn rfvp_runtime_poll_audio_command(
@@ -1617,5 +1786,64 @@ mod tests {
         assert_eq!(pending.command.encoded_kind, RFVP_AUDIO_ENCODED_OGG);
         assert_eq!(pending.command.payload_size, 4);
         assert_eq!(pending.payload, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn input_conversion_maps_keys_pointer_and_touch() {
+        let key = RfvpInputEventV1 {
+            struct_size: size_of::<RfvpInputEventV1>() as u32,
+            kind: RFVP_INPUT_KEY,
+            code: RFVP_KEY_RETURN,
+            phase: RFVP_INPUT_PHASE_DOWN,
+            x: 0,
+            y: 0,
+            value: 0,
+            modifiers: 0,
+            id: 0,
+        };
+        assert_eq!(
+            input_event(&key, (1280, 720)),
+            Ok(RfvpEvent::KeyDown {
+                key: KeyCode::Return,
+                repeat: false,
+                modifiers: InputModifiers::empty(),
+            })
+        );
+
+        let pointer = RfvpInputEventV1 {
+            struct_size: size_of::<RfvpInputEventV1>() as u32,
+            kind: RFVP_INPUT_POINTER_BUTTON,
+            code: RFVP_POINTER_LEFT,
+            phase: RFVP_INPUT_PHASE_DOWN,
+            x: 12,
+            y: 34,
+            value: 0,
+            modifiers: 0,
+            id: 0,
+        };
+        assert_eq!(
+            input_event(&pointer, (1280, 720)),
+            Ok(RfvpEvent::PointerDown {
+                button: PointerButton::Left,
+                x: 12,
+                y: 34,
+            })
+        );
+
+        let touch = RfvpInputEventV1 {
+            struct_size: size_of::<RfvpInputEventV1>() as u32,
+            kind: RFVP_INPUT_TOUCH,
+            code: 0,
+            phase: RFVP_INPUT_PHASE_MOVE,
+            x: 5,
+            y: 6,
+            value: 0,
+            modifiers: 0,
+            id: 7,
+        };
+        assert_eq!(
+            input_event(&touch, (1280, 720)),
+            Ok(RfvpEvent::TouchMove { id: 7, x: 5, y: 6 })
+        );
     }
 }

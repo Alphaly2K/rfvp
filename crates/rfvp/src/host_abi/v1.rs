@@ -490,7 +490,7 @@ pub(crate) static API_V1: RfvpApiV1 = RfvpApiV1 {
     runtime_events_enable: None,
     runtime_next_event_size: None,
     runtime_poll_events: None,
-    runtime_push_input: None,
+    runtime_push_input: host_runtime_entry!(super::runtime::rfvp_runtime_push_input),
     runtime_set_text_hidpi: None,
     runtime_set_text_replacements: None,
     runtime_set_text_translation_enabled: None,
@@ -559,8 +559,8 @@ mod tests {
             assert!(api.runtime_create.is_some());
             assert!(api.runtime_step.is_some());
             assert!(api.runtime_poll_audio_command.is_some());
+            assert!(api.runtime_push_input.is_some());
             assert!(api.frame_release.is_some());
-            assert!(api.runtime_push_input.is_none());
         }
         #[cfg(not(all(
             not(feature = "no_std"),
