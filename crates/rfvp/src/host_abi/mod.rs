@@ -20,7 +20,13 @@ pub unsafe extern "C" fn rfvp_get_api_v1(out_size: *mut usize) -> *const v1::Rfv
 #[cfg(all(
     not(feature = "no_std"),
     feature = "host-runtime",
-    any(target_os = "macos", target_os = "windows", target_os = "linux")
+    any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "ios",
+        target_os = "android"
+    )
 ))]
 pub mod runtime;
 

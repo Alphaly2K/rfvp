@@ -949,10 +949,18 @@ pub mod wasm_app_path;
 #[cfg(all(not(feature = "no_std"), target_arch = "wasm32"))]
 pub mod wasm_entry;
 
-#[cfg(all(not(feature = "no_std"), target_os = "ios"))]
+#[cfg(all(
+    not(feature = "no_std"),
+    feature = "gpu-render",
+    target_os = "ios"
+))]
 mod ios_host;
 
-#[cfg(all(not(feature = "no_std"), target_os = "android"))]
+#[cfg(all(
+    not(feature = "no_std"),
+    feature = "gpu-render",
+    target_os = "android"
+))]
 mod android_host;
 
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
