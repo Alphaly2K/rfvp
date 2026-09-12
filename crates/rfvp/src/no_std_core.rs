@@ -749,6 +749,10 @@ fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpRe
         {
             let visitor = &mut |path: &str, info: RfvpFileInfo| -> RfvpResult<()> {
                 if info.kind == crate::host_api::RfvpFileKind::File {
+                    let name = path.rsplit('/').next().unwrap_or(path);
+                    if path.contains('/') || name.starts_with("._") {
+                        return Ok(());
+                    }
                     packs.push(path.to_string());
                 }
                 Ok(())
