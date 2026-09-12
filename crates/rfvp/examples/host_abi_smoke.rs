@@ -8,14 +8,13 @@ use std::mem::size_of;
 
 use rfvp::host_abi::runtime::{
     rfvp_frame_get_commands, rfvp_frame_get_hit_proxies, rfvp_frame_get_size,
-    rfvp_frame_get_textures, rfvp_frame_release, rfvp_resources_create,
-    rfvp_resources_destroy, rfvp_resources_mount_directory, rfvp_runtime_acquire_frame,
-    rfvp_runtime_create, rfvp_runtime_destroy, rfvp_runtime_is_exit_requested,
-    rfvp_runtime_step,
+    rfvp_frame_get_textures, rfvp_frame_release, rfvp_resources_create, rfvp_resources_destroy,
+    rfvp_resources_mount_directory, rfvp_runtime_acquire_frame, rfvp_runtime_create,
+    rfvp_runtime_destroy, rfvp_runtime_is_exit_requested, rfvp_runtime_step,
 };
 use rfvp::host_abi::v1::{
-    RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RfvpDrawCommandV1, RfvpHitProxyV1,
-    RfvpResourcesConfigV1, RfvpRuntimeConfigV1, RfvpTextureCommandV1,
+    RfvpDrawCommandV1, RfvpHitProxyV1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1,
+    RfvpTextureCommandV1, RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK,
 };
 
 fn main() {

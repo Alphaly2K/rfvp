@@ -35,8 +35,8 @@ use super::parts_manager::PartsManager;
 use super::parts_manager::PartsManagerSnapshotV1;
 use super::prim::{PrimManager, INVAILD_PRIM_HANDLE};
 use super::prim::{PrimManagerSnapshotV1, PrimSnapshotV1};
-use super::text_manager::{TextManager, TextSlotSurfaceUpdate};
 use super::text_manager::TextManagerSnapshotV1;
+use super::text_manager::{TextManager, TextSlotSurfaceUpdate};
 use crate::subsystem::resources::color_manager::ColorManager;
 use crate::subsystem::resources::prim::{Prim, PrimType};
 use anyhow::{bail, Result};
@@ -1083,17 +1083,16 @@ impl MotionManager {
                 } else {
                     let (text_manager, textures) = (&self.text_manager, &mut self.textures);
                     if let Some(rgba) = text_manager.slot_rgba_bytes(slot) {
-                        textures[graph_id as usize]
-                            .load_text_from_buff_ref_with_display_size(
-                                rgba,
-                                info.width,
-                                info.height,
-                                info.display_width,
-                                info.display_height,
-                                info.origin_x_px,
-                                info.origin_y_px,
-                                info.raster_scale,
-                            )?;
+                        textures[graph_id as usize].load_text_from_buff_ref_with_display_size(
+                            rgba,
+                            info.width,
+                            info.height,
+                            info.display_width,
+                            info.display_height,
+                            info.origin_x_px,
+                            info.origin_y_px,
+                            info.raster_scale,
+                        )?;
                     } else {
                         return Ok(());
                     }
@@ -1103,7 +1102,6 @@ impl MotionManager {
         }
         Ok(())
     }
-
 }
 
 impl MotionManager {

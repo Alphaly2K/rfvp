@@ -210,6 +210,7 @@ pub struct DrawImageCmd {
     pub dst: RectI16,
     pub color: Rgba8,
     pub blend: CommandBlendMode,
+    pub filter: TextureFilter,
     pub effect_id: u16,
     pub clip: Option<RectI16>,
     pub vertices: [Vertex2D; 4],
@@ -393,7 +394,7 @@ impl<T: RfvpRenderer> RenderBackend for T {
                             texture: TextureId(cmd.texture.0),
                             vertices: cmd.vertices,
                             blend: cmd.blend.to_host_blend(),
-                            filter: TextureFilter::Linear,
+                            filter: cmd.filter,
                             scissor,
                         },
                     )?;
@@ -445,5 +446,100 @@ impl<T: RfvpRenderer> RenderBackend for T {
     fn end_frame(&mut self) -> Result<(), Self::Error> {
         RfvpRenderer::end_frame(self)?;
         RfvpRenderer::present(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingRenderer {
+        sprite_filters: Vec<TextureFilter>,
+    }
+
+    impl RfvpRenderer for RecordingRenderer {
+        fn create_texture(
+            &mut self,
+            _id: TextureId,
+            _desc: TextureDesc,
+            _pixels: Option<&[u8]>,
+        ) -> RfvpResult<()> {
+            Ok(())
+        }
+
+        fn update_texture(
+            &mut self,
+            _id: TextureId,
+            _rect: TextureRect,
+            _pixels: &[u8],
+        ) -> RfvpResult<()> {
+            Ok(())
+        }
+
+        fn destroy_texture(&mut self, _id: TextureId) {}
+
+        fn begin_frame(
+            &mut self,
+            _width: u32,
+            _height: u32,
+            _clear: Option<ColorRgba>,
+        ) -> RfvpResult<()> {
+            Ok(())
+        }
+
+        fn draw_sprite(&mut self, command: &DrawSpriteCommand) -> RfvpResult<()> {
+            self.sprite_filters.push(command.filter);
+            Ok(())
+        }
+
+        fn draw_solid(&mut self, _command: &DrawSolidCommand) -> RfvpResult<()> {
+            Ok(())
+        }
+
+        fn end_frame(&mut self) -> RfvpResult<()> {
+            Ok(())
+        }
+
+        fn present(&mut self) -> RfvpResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn image_filter_reaches_the_host_renderer() {
+        let mut renderer = RecordingRenderer::default();
+        let vertex = Vertex2D {
+            position: [0.0, 0.0],
+            tex_coord: [0.0, 0.0],
+            color: ColorRgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        };
+        RenderBackend::submit_commands(
+            &mut renderer,
+            &[RenderCommand::DrawImage(DrawImageCmd {
+                texture: TextureHandle(7),
+                src: RectU16::default(),
+                dst: RectI16::default(),
+                color: Rgba8 {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                    a: 255,
+                },
+                blend: CommandBlendMode::Normal,
+                filter: TextureFilter::Nearest,
+                effect_id: 0,
+                clip: None,
+                vertices: [vertex; 4],
+            })],
+        )
+        .unwrap();
+
+        assert_eq!(renderer.sprite_filters, [TextureFilter::Nearest]);
     }
 }

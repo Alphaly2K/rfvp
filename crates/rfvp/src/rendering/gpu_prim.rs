@@ -279,7 +279,8 @@ impl GpuPrimRenderer {
     ) -> crate::rendering::external::ExternalFrame {
         use crate::host_api::{
             ColorRgba, CommandBlendMode, DrawImageCmd, PortableTextureDesc, RectI16, RectU16,
-            RenderCommand, RenderFrame, Rgba8, TextureFormat, TextureHandle, Vertex2D,
+            RenderCommand, RenderFrame, Rgba8, TextureFilter, TextureFormat, TextureHandle,
+            Vertex2D,
         };
         use crate::rendering::external::{
             ExternalFrame, RecordedTextureCommand, RecordedTextureCreate,
@@ -403,6 +404,19 @@ impl GpuPrimRenderer {
                 dst: aabb(&vertices),
                 color,
                 blend: CommandBlendMode::Normal,
+                filter: match item.tex {
+                    DrawTextureKey::Graph(graph_id) => graphs
+                        .get(graph_id as usize)
+                        .map(|graph| {
+                            if Self::use_nearest_graph_sampler(graph_id, graph) {
+                                TextureFilter::Nearest
+                            } else {
+                                TextureFilter::Linear
+                            }
+                        })
+                        .unwrap_or(TextureFilter::Linear),
+                    DrawTextureKey::White => TextureFilter::Linear,
+                },
                 effect_id: 0,
                 clip: None,
                 vertices,

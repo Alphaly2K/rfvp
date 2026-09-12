@@ -13,9 +13,9 @@ use std::{
 };
 
 use super::gaiji_manager::GaijiManager;
+use crate::text_translation::{TextTranslationController, TextTranslationRequest};
 #[cfg(not(feature = "no_std"))]
 use crate::utils::file::app_base_path;
-use crate::text_translation::{TextTranslationController, TextTranslationRequest};
 use crate::{font::Font, subsystem::resources::color_manager::ColorItem};
 use anyhow::{anyhow, bail, Result};
 #[cfg(feature = "no_std")]
@@ -1582,7 +1582,12 @@ impl TextItem {
         }
         let crop_w = rect.w.max(0) as u32;
         let crop_h = rect.h.max(0) as u32;
-        let mut out = vec![0; (crop_w as usize).saturating_mul(crop_h as usize).saturating_mul(4)];
+        let mut out = vec![
+            0;
+            (crop_w as usize)
+                .saturating_mul(crop_h as usize)
+                .saturating_mul(4)
+        ];
         let src_stride = width as usize * 4;
         let dst_stride = crop_w as usize * 4;
         let x = rect.x.max(0) as usize;
@@ -3079,15 +3084,11 @@ impl TextManager {
         for slot in 0..self.items.len() {
             let Some(generation) = ({
                 let item = &self.items[slot];
-                (item.loaded && item.reveal_is_complete())
-                    .then_some(item.translation_generation)
+                (item.loaded && item.reveal_is_complete()).then_some(item.translation_generation)
             }) else {
                 continue;
             };
-            let Some(translated) = self
-                .text_translation
-                .take_ready(slot as u32, generation)
-            else {
+            let Some(translated) = self.text_translation.take_ready(slot as u32, generation) else {
                 continue;
             };
             if self.items[slot].content_text == translated {
@@ -3442,12 +3443,9 @@ impl TextManager {
     pub fn set_text_content(&mut self, id: i32, content_text: &str) {
         let text = &mut self.items[id as usize];
         let generation = text.next_translation_generation();
-        let replacement = self.text_translation.begin_source(
-            id as u32,
-            generation,
-            content_text,
-            None,
-        );
+        let replacement =
+            self.text_translation
+                .begin_source(id as u32, generation, content_text, None);
         let rendered = replacement.as_deref().unwrap_or(content_text);
         text.parse_content_text(rendered);
     }
@@ -3865,7 +3863,10 @@ mod hidpi_surface_tests {
         assert_eq!((bounds.x, bounds.y, bounds.w, bounds.h), (1, 0, 5, 4));
         let cropped = TextItem::crop_rgba(pixels, width as u32, height as u32, bounds);
         assert_eq!(cropped.len(), 5 * 4 * 4);
-        assert_eq!(cropped.chunks_exact(4).filter(|px| px[3] != 0).count(), 3 * 2);
+        assert_eq!(
+            cropped.chunks_exact(4).filter(|px| px[3] != 0).count(),
+            3 * 2
+        );
     }
 
     #[test]

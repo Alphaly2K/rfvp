@@ -36,9 +36,7 @@ impl HostSubFile {
             .checked_add(len)
             .ok_or_else(|| anyhow!("pack slice overflow: start={start} len={len}"))?;
         if end > file_len {
-            bail!(
-                "pack slice out of range: start={start} len={len} file_size={file_len}"
-            );
+            bail!("pack slice out of range: start={start} len={len} file_size={file_len}");
         }
         file.seek(SeekFrom::Start(start))?;
         Ok(Self {
@@ -107,8 +105,8 @@ pub struct VfsFile {
 
 impl VfsFile {
     pub fn from_pack_path(path: PathBuf, folder_name: String, nls: Nls) -> Result<Self> {
-        let mut file = File::open(&path)
-            .with_context(|| format!("open host pack {}", path.display()))?;
+        let mut file =
+            File::open(&path).with_context(|| format!("open host pack {}", path.display()))?;
         let (file_count, filename_table_size, entries) = Self::parse_reader(&mut file, nls)
             .with_context(|| format!("parse host pack {}", path.display()))?;
         Ok(Self {
@@ -230,10 +228,7 @@ impl VfsFile {
             .with_context(|| format!("open host pack {}", self.path.display()))?;
         let sub_file = HostSubFile::new(file, ent.offset, ent.size)
             .with_context(|| format!("open pack entry {}/{}", self.folder_name, name))?;
-        Ok((
-            Box::new(sub_file),
-            Some(ent.size),
-        ))
+        Ok((Box::new(sub_file), Some(ent.size)))
     }
 
     pub fn open_stream(&self, name: &str) -> Result<VfsStream> {

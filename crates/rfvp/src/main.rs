@@ -20,8 +20,6 @@ mod exit_confirm_ui;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod font;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
-mod text_translation;
-#[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod legacy_save_load_ui;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod rendering;
@@ -33,6 +31,8 @@ mod rfvp_render;
 mod script;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod subsystem;
+#[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
+mod text_translation;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod trace;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]

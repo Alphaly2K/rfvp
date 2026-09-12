@@ -628,11 +628,7 @@ impl SoftRenderer {
         // The original engine's draw_color_tile() uses only the accumulated
         // parent position plus the tile's X/Y and W/H. Tile primitives do not
         // apply rotation, scale, pivot, or V3D.
-        let model = Mat4::from_translation(vec3(
-            parent_x + draw_x,
-            parent_y + draw_y,
-            0.0,
-        ));
+        let model = Mat4::from_translation(vec3(parent_x + draw_x, parent_y + draw_y, 0.0));
         let _ = self.draw_textured_quad(
             model,
             w,

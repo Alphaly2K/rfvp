@@ -9,7 +9,7 @@ use image::GenericImageView;
 use crate::host_api::{
     CommandBlendMode, DrawImageCmd, HitProxy, HitProxyTable, PortableTextureDesc, PrimId, RectI16,
     RectU16, RenderBackend, RenderCommand, RenderFrame, RfvpError, RfvpResult, Rgba8,
-    TextureBackend, TextureFormat, TextureHandle, Vertex2D,
+    TextureBackend, TextureFilter, TextureFormat, TextureHandle, Vertex2D,
 };
 use crate::subsystem::resources::{
     color_manager::ColorManager,
@@ -133,6 +133,16 @@ fn host_texture_id(graph_id: u16) -> TextureHandle {
     TextureHandle(graph_id as u32)
 }
 
+fn graph_texture_filter(graph_id: u16, graph: &GraphBuff) -> TextureFilter {
+    if (4064..=4095).contains(&graph_id)
+        || graph.load_kind == crate::subsystem::resources::graph_buff::GraphBuffLoadKind::GaijiGlyph
+    {
+        TextureFilter::Nearest
+    } else {
+        TextureFilter::Linear
+    }
+}
+
 fn build_draw_model(
     virtual_size: (u32, u32),
     prim: &Prim,
@@ -207,6 +217,7 @@ fn emit_sprite(
     uv1: Vec2,
     color: Vec4,
     texture: DrawTextureKey,
+    filter: TextureFilter,
 ) -> RfvpResult<()> {
     let p0 = model.transform_point3(vec3(0.0, dst_h, 0.0));
     let p1 = model.transform_point3(vec3(0.0, 0.0, 0.0));
@@ -235,6 +246,7 @@ fn emit_sprite(
         dst: rect,
         color: rgba8_from_vec4(color),
         blend: CommandBlendMode::Normal,
+        filter,
         effect_id: 0,
         clip: None,
         vertices,
@@ -535,11 +547,7 @@ where
                 // The original engine's draw_color_tile() uses only the
                 // accumulated parent position plus the tile's X/Y and W/H.
                 // Tile primitives do not apply rotation, scale, pivot, or V3D.
-                let model = Mat4::from_translation(vec3(
-                    parent_x + draw_x,
-                    parent_y + draw_y,
-                    0.0,
-                ));
+                let model = Mat4::from_translation(vec3(parent_x + draw_x, parent_y + draw_y, 0.0));
                 emit_sprite(
                     commands,
                     hit_proxies,
@@ -556,6 +564,7 @@ where
                     vec2(0.5, 0.5),
                     rgba,
                     DrawTextureKey::White,
+                    TextureFilter::Linear,
                 )?;
             }
         }
@@ -715,10 +724,8 @@ fn emit_graph_sprite(
     let uv0 = vec2(u / tw as f32, v / th as f32);
     let uv1 = vec2((u + tex_w) / tw as f32, (v + tex_h) / th as f32);
     let color = vec4(1.0, 1.0, 1.0, draw_alpha);
-    let off_x = graph.get_offset_x() as f32
-        + if text_graph { text_draw_x } else { clip_x };
-    let off_y = graph.get_offset_y() as f32
-        + if text_graph { text_draw_y } else { clip_y };
+    let off_x = graph.get_offset_x() as f32 + if text_graph { text_draw_x } else { clip_x };
+    let off_y = graph.get_offset_y() as f32 + if text_graph { text_draw_y } else { clip_y };
     let (pivot_x, pivot_y) = if (attr & 2) != 0 {
         (prim.get_opx() as f32, prim.get_opy() as f32)
     } else {
@@ -752,6 +759,7 @@ fn emit_graph_sprite(
         uv1,
         color,
         DrawTextureKey::Graph(graph_id),
+        graph_texture_filter(graph_id, graph),
     )
 }
 
@@ -858,6 +866,7 @@ where
             vec2(tile_w / tw as f32, tile_h / th as f32),
             vec4(1.0, 1.0, 1.0, alpha),
             DrawTextureKey::Graph(graph_id),
+            graph_texture_filter(graph_id, graph),
         )?;
     }
 

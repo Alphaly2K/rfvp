@@ -858,9 +858,9 @@ pub mod string {
 ))]
 compile_error!("feature `no_std` is an independent core-library build and must not be combined with runtime/backend features");
 
-pub mod host_api;
 #[cfg(not(feature = "no_std"))]
 pub mod host_abi;
+pub mod host_api;
 
 #[cfg(any(feature = "no_std", feature = "host-runtime"))]
 pub mod no_std_core;
@@ -900,7 +900,6 @@ pub mod debug_ui {
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 pub mod exit_confirm_ui;
 pub mod font;
-pub mod text_translation;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 pub mod legacy_save_load_ui;
 pub(crate) mod platform_random;
@@ -928,6 +927,7 @@ pub mod soft_host;
 ))]
 pub mod soft_render;
 pub mod subsystem;
+pub mod text_translation;
 pub mod trace;
 #[cfg(not(feature = "no_std"))]
 pub mod utils;
@@ -949,18 +949,10 @@ pub mod wasm_app_path;
 #[cfg(all(not(feature = "no_std"), target_arch = "wasm32"))]
 pub mod wasm_entry;
 
-#[cfg(all(
-    not(feature = "no_std"),
-    feature = "gpu-render",
-    target_os = "ios"
-))]
+#[cfg(all(not(feature = "no_std"), feature = "gpu-render", target_os = "ios"))]
 mod ios_host;
 
-#[cfg(all(
-    not(feature = "no_std"),
-    feature = "gpu-render",
-    target_os = "android"
-))]
+#[cfg(all(not(feature = "no_std"), feature = "gpu-render", target_os = "android"))]
 mod android_host;
 
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
@@ -1040,10 +1032,7 @@ fn run_rfvp(game_root: &str, nls: Nls) -> Result<()> {
     feature = "gpu-render",
     any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
-pub(crate) fn build_pump_instance(
-    game_root: &str,
-    nls: Nls,
-) -> Result<crate::app::PumpInstance> {
+pub(crate) fn build_pump_instance(game_root: &str, nls: Nls) -> Result<crate::app::PumpInstance> {
     set_base_path(game_root);
     let parser = load_script(nls)?;
     let title = parser.get_title();
@@ -1149,10 +1138,7 @@ pub unsafe extern "C" fn rfvp_pump_step(handle: *mut RfvpPumpHandle, timeout_ms:
 ))]
 #[cfg(feature = "gpu-render")]
 #[no_mangle]
-pub unsafe extern "C" fn rfvp_pump_set_text_hidpi(
-    handle: *mut RfvpPumpHandle,
-    enabled: i32,
-) {
+pub unsafe extern "C" fn rfvp_pump_set_text_hidpi(handle: *mut RfvpPumpHandle, enabled: i32) {
     if handle.is_null() {
         return;
     }

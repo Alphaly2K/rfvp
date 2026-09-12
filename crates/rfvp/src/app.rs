@@ -1437,9 +1437,7 @@ impl App {
 
     pub fn set_text_hidpi_enabled(&mut self, enabled: bool) {
         let mut gd = gd_write(&self.game_data);
-        gd.motion_manager
-            .text_manager
-            .set_hidpi_enabled(enabled);
+        gd.motion_manager.text_manager.set_hidpi_enabled(enabled);
     }
 
     pub fn virtual_size(&self) -> (u32, u32) {
@@ -1643,6 +1641,29 @@ impl App {
         (vx, vy, in_content)
     }
 
+    /// Inject a pointer event in virtual game coordinates from a headless host.
+    ///
+    /// Mirrors the windowless ABI input path: coordinates are already in the
+    /// game's virtual pixel space, so no surface mapping is applied.
+    ///
+    /// `phase`:
+    /// - 0 = down
+    /// - 1 = move
+    /// - 2 = up
+    #[cfg(not(target_os = "ios"))]
+    pub fn host_virtual_pointer(&mut self, phase: i32, x: i32, y: i32) {
+        use crate::subsystem::resources::input_manager::KeyCode;
+
+        let mut gd = gd_write(&self.game_data);
+        gd.inputs_manager.notify_mouse_move(x, y);
+        gd.inputs_manager.set_mouse_in(true);
+        match phase {
+            0 => gd.inputs_manager.notify_mouse_down(KeyCode::MouseLeft),
+            2 => gd.inputs_manager.notify_mouse_up(KeyCode::MouseLeft),
+            _ => {}
+        }
+    }
+
     /// Inject a single-finger touch event from an iOS host.
     ///
     /// `phase`:
@@ -1731,7 +1752,6 @@ impl App {
                 _ => {}
             }
         }
-
     }
 
     /// Inject a mouse-button event from an iOS host.
@@ -1768,7 +1788,6 @@ impl App {
                 _ => {}
             }
         }
-
     }
 
     /// Inject a mouse-wheel event from an iOS host.
@@ -1791,7 +1810,6 @@ impl App {
             gd.inputs_manager.set_mouse_in(in_content);
             gd.inputs_manager.notify_mouse_wheel(delta);
         }
-
     }
 
     /// Inject a key event from an iOS host.
@@ -1819,7 +1837,6 @@ impl App {
                 _ => {}
             }
         }
-
     }
 
     /// Inject a single-finger touch event from an Android host.
@@ -1906,7 +1923,6 @@ impl App {
                 _ => {}
             }
         }
-
     }
 
     /// Recreate the presentation surface from a new `ANativeWindow*`.
@@ -3410,6 +3426,13 @@ pub struct PumpInstance {
 impl PumpInstance {
     pub fn virtual_size(&self) -> (u32, u32) {
         self.app.virtual_size()
+    }
+
+    /// Inject a pointer event in virtual game coordinates (headless hosts).
+    ///
+    /// `phase`: 0 = down, 1 = move, 2 = up.
+    pub fn host_virtual_pointer(&mut self, phase: i32, x: i32, y: i32) {
+        self.app.host_virtual_pointer(phase, x, y);
     }
 
     #[cfg(feature = "external-renderer")]

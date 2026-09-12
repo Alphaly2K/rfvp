@@ -547,13 +547,14 @@ impl GraphBuff {
 
         if !reused {
             self.texture = None;
-            let img = image::RgbaImage::from_raw(width, height, buff.to_vec()).ok_or_else(|| {
-                anyhow!(
-                    "load_from_buff: RgbaImage::from_raw failed ({}x{})",
-                    width,
-                    height
-                )
-            })?;
+            let img =
+                image::RgbaImage::from_raw(width, height, buff.to_vec()).ok_or_else(|| {
+                    anyhow!(
+                        "load_from_buff: RgbaImage::from_raw failed ({}x{})",
+                        width,
+                        height
+                    )
+                })?;
             self.texture = Some(DynamicImage::ImageRgba8(img));
         }
 
@@ -1078,7 +1079,6 @@ mod hidpi_text_region_tests {
         assert_eq!(region.tex_w, 700.0);
         assert_eq!(region.tex_h, 140.0);
     }
-
 
     #[test]
     fn text_rect_keeps_destination_origin_when_source_starts_inside_content() {

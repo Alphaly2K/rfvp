@@ -499,7 +499,9 @@ pub(crate) static API_V1: RfvpApiV1 = RfvpApiV1 {
     runtime_set_media_enabled: None,
     runtime_notify_lifecycle: None,
     runtime_set_volume: None,
-    runtime_poll_audio_command: host_runtime_entry!(super::runtime::rfvp_runtime_poll_audio_command),
+    runtime_poll_audio_command: host_runtime_entry!(
+        super::runtime::rfvp_runtime_poll_audio_command
+    ),
     runtime_capabilities: host_runtime_entry!(super::runtime::rfvp_runtime_capabilities),
     runtime_acquire_frame: host_runtime_entry!(super::runtime::rfvp_runtime_acquire_frame),
     frame_release: host_runtime_entry!(super::runtime::rfvp_frame_release),

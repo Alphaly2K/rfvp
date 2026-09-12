@@ -131,7 +131,9 @@ impl RenderBackend for RecordingBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_api::{CommandBlendMode, DrawImageCmd, RectI16, RectU16, Rgba8, Vertex2D};
+    use crate::host_api::{
+        CommandBlendMode, DrawImageCmd, RectI16, RectU16, Rgba8, TextureFilter, Vertex2D,
+    };
 
     #[test]
     fn recording_backend_keeps_texture_and_command_order() {
@@ -160,6 +162,7 @@ mod tests {
                     a: 255,
                 },
                 blend: CommandBlendMode::Normal,
+                filter: TextureFilter::Linear,
                 effect_id: 0,
                 clip: None,
                 vertices: [Vertex2D {

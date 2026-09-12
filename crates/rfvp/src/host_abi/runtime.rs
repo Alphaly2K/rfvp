@@ -45,8 +45,8 @@ use crate::host_api::{
     EncodedAudioKind, InputModifiers, KeyCode, PixelFormat, PointerButton, PortableTextureDesc,
     RectI16, RectU16, RenderBackend, RenderCommand, RfvpAudio, RfvpClock, RfvpError, RfvpEvent,
     RfvpFile, RfvpFileInfo, RfvpFileKind, RfvpFileSystem, RfvpHost, RfvpLogLevel, RfvpRenderer,
-    RfvpResult, Rgba8, TextureBackend, TextureDesc, TextureFormat, TextureHandle, TextureId,
-    TextureRect, Vertex2D,
+    RfvpResult, Rgba8, TextureBackend, TextureDesc, TextureFilter, TextureFormat, TextureHandle,
+    TextureId, TextureRect, Vertex2D,
 };
 use crate::no_std_core::{RfvpBootConfig, RfvpCore, RfvpCoreConfig};
 use crate::rendering::external::{
@@ -224,6 +224,7 @@ impl HostRenderer {
             },
             color: rgba8(vertices[0].color),
             blend: command_blend(command.blend),
+            filter: command.filter,
             effect_id: 0,
             clip: command.scissor.map(|rect| RectI16 {
                 x: rect.x.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
@@ -265,6 +266,11 @@ impl RfvpRenderer for HostRenderer {
         if let Some(texture) = self.backend.creates.last_mut() {
             texture.generation = generation;
             self.textures.insert(handle, texture.clone());
+        }
+        if let Some(RecordedTextureCommand::Create(texture)) =
+            self.backend.texture_commands.last_mut()
+        {
+            texture.generation = generation;
         }
         Ok(())
     }
@@ -807,6 +813,10 @@ fn draw_image(command: &DrawImageCmd, clip: Option<RectI16>) -> RfvpDrawCommandV
     output.kind = RFVP_DRAW_IMAGE;
     output.texture_id = command.texture.0;
     output.blend = blend(command.blend);
+    output.filter = match command.filter {
+        TextureFilter::Nearest => crate::host_abi::v1::RFVP_TEXTURE_FILTER_NEAREST,
+        TextureFilter::Linear => crate::host_abi::v1::RFVP_TEXTURE_FILTER_LINEAR,
+    };
     output.effect_id = command.effect_id as u32;
     output.src_rect = rect_u16(command.src);
     output.dst_rect = rect_i32(command.dst);
@@ -1504,7 +1514,9 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
                 // the host presents. Preserve texture create/update/destroy
                 // commands from every skipped frame so the next presented
                 // frame still references a valid texture state.
-                pending.texture_commands.append(&mut next_frame.texture_commands);
+                pending
+                    .texture_commands
+                    .append(&mut next_frame.texture_commands);
                 next_frame.texture_commands = pending.texture_commands;
             }
             runtime.pending_frame = Some(next_frame);
@@ -1525,6 +1537,30 @@ pub unsafe extern "C" fn rfvp_runtime_is_exit_requested(runtime: u64) -> i32 {
                 .unwrap_or(0)
         })
     })
+}
+
+pub unsafe extern "C" fn rfvp_runtime_stage_width(runtime: u64) -> u32 {
+    guard_u64(|| {
+        with_state(|state| {
+            state
+                .runtimes
+                .get(Handle::from_raw(runtime))
+                .map(|runtime| u64::from(runtime.width))
+                .unwrap_or(0)
+        })
+    }) as u32
+}
+
+pub unsafe extern "C" fn rfvp_runtime_stage_height(runtime: u64) -> u32 {
+    guard_u64(|| {
+        with_state(|state| {
+            state
+                .runtimes
+                .get(Handle::from_raw(runtime))
+                .map(|runtime| u64::from(runtime.height))
+                .unwrap_or(0)
+        })
+    }) as u32
 }
 
 pub unsafe extern "C" fn rfvp_runtime_push_input(
