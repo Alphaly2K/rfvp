@@ -1498,7 +1498,16 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
                 }
                 runtime.audio_commands.push_back(command);
             }
-            runtime.pending_frame = Some(runtime.host.renderer.take_external_frame());
+            let mut next_frame = runtime.host.renderer.take_external_frame();
+            if let Some(mut pending) = runtime.pending_frame.take() {
+                // Logic-only catch-up ticks may advance several frames before
+                // the host presents. Preserve texture create/update/destroy
+                // commands from every skipped frame so the next presented
+                // frame still references a valid texture state.
+                pending.texture_commands.append(&mut next_frame.texture_commands);
+                next_frame.texture_commands = pending.texture_commands;
+            }
+            runtime.pending_frame = Some(next_frame);
             runtime.width = runtime.core.config().virtual_width;
             runtime.height = runtime.core.config().virtual_height;
             RFVP_STATUS_OK
