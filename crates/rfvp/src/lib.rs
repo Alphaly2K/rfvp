@@ -852,6 +852,8 @@ pub mod string {
         feature = "fontdue-compat",
         feature = "cursor-ani",
         feature = "external-renderer",
+        feature = "external-audio",
+        feature = "host-runtime",
     )
 ))]
 compile_error!("feature `no_std` is an independent core-library build and must not be combined with runtime/backend features");
@@ -860,10 +862,10 @@ pub mod host_api;
 #[cfg(not(feature = "no_std"))]
 pub mod host_abi;
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 pub mod no_std_core;
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 pub use no_std_core::{
     RfvpBootConfig, RfvpCore, RfvpCoreConfig, RfvpCoreRunState, RfvpLoadedGame, RfvpResourceEntry,
     RfvpTickResult,
@@ -904,9 +906,9 @@ pub mod legacy_save_load_ui;
 pub(crate) mod platform_random;
 pub(crate) mod platform_time;
 pub mod rendering;
-#[cfg(not(feature = "no_std"))]
+#[cfg(all(not(feature = "no_std"), not(feature = "external-audio")))]
 pub mod rfvp_audio;
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "external-audio"))]
 #[path = "rfvp_audio_no_std.rs"]
 pub mod rfvp_audio;
 #[cfg(all(not(feature = "no_std"), feature = "rfvp-os"))]
@@ -1025,6 +1027,32 @@ fn run_rfvp(game_root: &str, nls: Nls) -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(
+    not(feature = "no_std"),
+    feature = "gpu-render",
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
+))]
+pub(crate) fn build_pump_instance(
+    game_root: &str,
+    nls: Nls,
+) -> Result<crate::app::PumpInstance> {
+    set_base_path(game_root);
+    let parser = load_script(nls)?;
+    let title = parser.get_title();
+    let size = parser.get_screen_size();
+    let script_engine = ThreadManager::new();
+
+    App::app_with_config(app_config(&title, size))
+        .with_scene::<AnzuScene>()
+        .with_script_engine(script_engine)
+        .with_window_title(&title)
+        .with_window_size(size)
+        .with_parser(parser)
+        .with_text_hidpi_enabled(default_text_hidpi_enabled())
+        .with_vfs(nls)?
+        .build_pump()
+}
+
 /// Opaque pump handle for GUI hosts (e.g. SwiftUI launcher) that already own the platform main loop.
 #[cfg(all(
     not(feature = "no_std"),
@@ -1069,38 +1097,10 @@ pub unsafe extern "C" fn rfvp_pump_create(
     };
 
     // Build the app but do not enter the blocking run loop.
-    set_base_path(&game_root);
-    let parser = match load_script(nls) {
-        Ok(p) => p,
+    let inst = match build_pump_instance(&game_root, nls) {
+        Ok(inst) => inst,
         Err(e) => {
-            log::error!("rfvp_pump_create: failed to load script: {e:?}");
-            return null_mut();
-        }
-    };
-    let title = parser.get_title();
-    let size = parser.get_screen_size();
-    let script_engine = ThreadManager::new();
-
-    let builder = match App::app_with_config(app_config(&title, size))
-        .with_scene::<AnzuScene>()
-        .with_script_engine(script_engine)
-        .with_window_title(&title)
-        .with_window_size(size)
-        .with_parser(parser)
-        .with_text_hidpi_enabled(default_text_hidpi_enabled())
-        .with_vfs(nls)
-    {
-        Ok(b) => b,
-        Err(e) => {
-            log::error!("rfvp_pump_create: failed to build AppBuilder: {e:?}");
-            return null_mut();
-        }
-    };
-
-    let inst = match builder.build_pump() {
-        Ok(i) => i,
-        Err(e) => {
-            log::error!("rfvp_pump_create: build_pump failed: {e:?}");
+            log::error!("rfvp_pump_create: failed to build pump instance: {e:?}");
             return null_mut();
         }
     };

@@ -15,7 +15,7 @@ pub use clock::RfvpClock;
 pub use error::{RfvpError, RfvpResult};
 pub use event::{InputModifiers, KeyCode, PointerButton, RfvpEvent};
 pub use fs::{RfvpAssetPath, RfvpFile, RfvpFileInfo, RfvpFileKind, RfvpFileSystem};
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 pub use host::{FatalErrorCallback, FatalErrorCode, PlatformCallbacks};
 pub use host::{RfvpHost, RfvpLogLevel};
 pub use render::{

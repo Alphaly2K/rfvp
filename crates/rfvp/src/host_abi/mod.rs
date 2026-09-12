@@ -9,6 +9,21 @@ use core::marker::PhantomData;
 
 pub mod v1;
 
+#[no_mangle]
+pub unsafe extern "C" fn rfvp_get_api_v1(out_size: *mut usize) -> *const v1::RfvpApiV1 {
+    if !out_size.is_null() {
+        unsafe { *out_size = core::mem::size_of::<v1::RfvpApiV1>() };
+    }
+    core::ptr::addr_of!(v1::API_V1)
+}
+
+#[cfg(all(
+    not(feature = "no_std"),
+    feature = "host-runtime",
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
+))]
+pub mod runtime;
+
 /// Typed, generation-safe handle used by host-side object registries.
 #[repr(transparent)]
 pub struct Handle<T> {

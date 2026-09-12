@@ -29,6 +29,11 @@ name = "sizecheck"
 path = "src/bin/sizecheck.rs"
 required-features = ["gpu-render"]
 
+[[example]]
+name = "host_abi_smoke"
+path = "examples/host_abi_smoke.rs"
+required-features = ["host-runtime"]
+
 [dependencies]
 anyhow = { version = "1.0.79", default-features = false, optional = true }
 encoding_rs = { version = "0.8.33", optional = true }
@@ -206,6 +211,22 @@ logging = ["runtime-core-deps", "dep:fern"]
 
 # Normal audio backend. Enabled by default for backward compatibility.
 audio = ["runtime-core-deps", "dep:kira", "dep:symphonia-core"]
+
+# Backend-neutral audio command collection for an external host.
+#
+# The engine still loads and decodes sounds, but playback state is emitted as
+# AudioCommand values. Device selection, CoreAudio/WASAPI/ALSA streams, mixing,
+# and lifecycle stay in the host.
+external-audio = ["runtime-core-deps", "dep:spin"]
+
+# Production host runtime used by the versioned C ABI. It owns neither a
+# window/surface nor an audio device.
+host-runtime = [
+    "runtime-core-deps",
+    "external-renderer",
+    "external-audio",
+    "zlib-flate2",
+]
 
 # API-compatible no-op audio backend for OS/UEFI-style builds.
 no-audio = ["runtime-core-deps"]

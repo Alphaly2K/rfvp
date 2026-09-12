@@ -403,22 +403,44 @@ pub struct RfvpApiV1 {
     pub frame_get_hit_proxies: Option<RfvpFrameGetHitProxiesFn>,
 }
 
-static API_V1: RfvpApiV1 = RfvpApiV1 {
+#[cfg(all(
+    not(feature = "no_std"),
+    feature = "host-runtime",
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
+))]
+macro_rules! host_runtime_entry {
+    ($entry:path) => {
+        Some($entry)
+    };
+}
+
+#[cfg(not(all(
+    not(feature = "no_std"),
+    feature = "host-runtime",
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
+)))]
+macro_rules! host_runtime_entry {
+    ($entry:path) => {
+        None
+    };
+}
+
+pub(crate) static API_V1: RfvpApiV1 = RfvpApiV1 {
     struct_size: size_of::<RfvpApiV1>() as u32,
     abi_version: RFVP_API_ABI_VERSION,
     magic: RFVP_API_ABI_MAGIC,
-    resources_create: None,
-    resources_destroy: None,
-    resources_clear: None,
-    resources_mount_directory: None,
-    resources_mount_pack: None,
-    resources_set_override: None,
-    resources_clear_overrides: None,
-    resources_set_save_root: None,
-    runtime_create: None,
-    runtime_destroy: None,
-    runtime_step: None,
-    runtime_is_exit_requested: None,
+    resources_create: host_runtime_entry!(super::runtime::rfvp_resources_create),
+    resources_destroy: host_runtime_entry!(super::runtime::rfvp_resources_destroy),
+    resources_clear: host_runtime_entry!(super::runtime::rfvp_resources_clear),
+    resources_mount_directory: host_runtime_entry!(super::runtime::rfvp_resources_mount_directory),
+    resources_mount_pack: host_runtime_entry!(super::runtime::rfvp_resources_mount_pack),
+    resources_set_override: host_runtime_entry!(super::runtime::rfvp_resources_set_override),
+    resources_clear_overrides: host_runtime_entry!(super::runtime::rfvp_resources_clear_overrides),
+    resources_set_save_root: host_runtime_entry!(super::runtime::rfvp_resources_set_save_root),
+    runtime_create: host_runtime_entry!(super::runtime::rfvp_runtime_create),
+    runtime_destroy: host_runtime_entry!(super::runtime::rfvp_runtime_destroy),
+    runtime_step: host_runtime_entry!(super::runtime::rfvp_runtime_step),
+    runtime_is_exit_requested: host_runtime_entry!(super::runtime::rfvp_runtime_is_exit_requested),
     runtime_events_enable: None,
     runtime_next_event_size: None,
     runtime_poll_events: None,
@@ -431,13 +453,13 @@ static API_V1: RfvpApiV1 = RfvpApiV1 {
     runtime_set_media_enabled: None,
     runtime_notify_lifecycle: None,
     runtime_set_volume: None,
-    runtime_capabilities: None,
-    runtime_acquire_frame: None,
-    frame_release: None,
-    frame_get_size: None,
-    frame_get_commands: None,
-    frame_get_textures: None,
-    frame_get_hit_proxies: None,
+    runtime_capabilities: host_runtime_entry!(super::runtime::rfvp_runtime_capabilities),
+    runtime_acquire_frame: host_runtime_entry!(super::runtime::rfvp_runtime_acquire_frame),
+    frame_release: host_runtime_entry!(super::runtime::rfvp_frame_release),
+    frame_get_size: host_runtime_entry!(super::runtime::rfvp_frame_get_size),
+    frame_get_commands: host_runtime_entry!(super::runtime::rfvp_frame_get_commands),
+    frame_get_textures: host_runtime_entry!(super::runtime::rfvp_frame_get_textures),
+    frame_get_hit_proxies: host_runtime_entry!(super::runtime::rfvp_frame_get_hit_proxies),
 };
 
 /// Returns the process-lifetime v1 table used by the future flat export.
@@ -478,10 +500,29 @@ mod tests {
     }
 
     #[test]
-    fn table_starts_without_implemented_entries() {
+    fn table_reflects_implemented_entries() {
         let api = api_v1_table();
-        assert!(api.resources_create.is_none());
-        assert!(api.runtime_create.is_none());
-        assert!(api.frame_release.is_none());
+        #[cfg(all(
+            not(feature = "no_std"),
+            feature = "host-runtime",
+            any(target_os = "macos", target_os = "windows", target_os = "linux")
+        ))]
+        {
+            assert!(api.resources_create.is_some());
+            assert!(api.runtime_create.is_some());
+            assert!(api.runtime_step.is_some());
+            assert!(api.frame_release.is_some());
+            assert!(api.runtime_push_input.is_none());
+        }
+        #[cfg(not(all(
+            not(feature = "no_std"),
+            feature = "host-runtime",
+            any(target_os = "macos", target_os = "windows", target_os = "linux")
+        )))]
+        {
+            assert!(api.resources_create.is_none());
+            assert!(api.runtime_create.is_none());
+            assert!(api.frame_release.is_none());
+        }
     }
 }

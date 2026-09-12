@@ -60,7 +60,7 @@ impl VideoPlayerManager {
         motion: &mut MotionManager,
         audio_manager: Option<Arc<AudioManager>>,
     ) -> Result<()> {
-        let name = movie_path.as_ref().as_os_str().to_string();
+        let name = movie_path.as_ref().to_string_lossy().to_owned();
         self.start_from_bytes(
             &name,
             Vec::new(),

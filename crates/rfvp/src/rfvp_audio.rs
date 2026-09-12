@@ -2,7 +2,11 @@ use std::fmt::Debug;
 
 // ─── Kira (desktop audio) ─────────────────────────────────────────────────────
 
-#[cfg(all(feature = "audio", not(target_os = "uefi")))]
+#[cfg(all(
+    feature = "audio",
+    not(feature = "external-audio"),
+    not(target_os = "uefi")
+))]
 mod real {
     use std::sync::Mutex;
 
@@ -63,6 +67,93 @@ mod real {
     }
 }
 
+// ─── Host-owned audio command queue (desktop external audio) ─────────────────
+
+#[cfg(all(
+    feature = "external-audio",
+    not(feature = "no_std"),
+    not(target_os = "uefi")
+))]
+mod external {
+    use alloc::vec::Vec;
+
+    use crate::host_api::{AudioParams, AudioStreamDesc, AudioStreamId, EncodedAudioKind};
+
+    pub use super::no_audio_tween::Tween;
+
+    #[derive(Debug, Clone)]
+    pub enum AudioCommand {
+        LoadEncoded {
+            id: AudioStreamId,
+            kind: EncodedAudioKind,
+            bytes: Vec<u8>,
+        },
+        CreateStream {
+            id: AudioStreamId,
+            desc: AudioStreamDesc,
+        },
+        SubmitI16 {
+            id: AudioStreamId,
+            samples: Vec<i16>,
+        },
+        SubmitF32 {
+            id: AudioStreamId,
+            samples: Vec<f32>,
+        },
+        Play {
+            id: AudioStreamId,
+            params: AudioParams,
+            fade_in_ms: u32,
+        },
+        Stop {
+            id: AudioStreamId,
+            fade_ms: u32,
+        },
+        Pause {
+            id: AudioStreamId,
+        },
+        Resume {
+            id: AudioStreamId,
+        },
+        SetParams {
+            id: AudioStreamId,
+            params: AudioParams,
+        },
+        DestroyStream {
+            id: AudioStreamId,
+        },
+        MasterVolume {
+            volume: f32,
+        },
+    }
+
+    #[derive(Debug, Default)]
+    pub struct AudioManager {
+        commands: spin::Mutex<Vec<AudioCommand>>,
+    }
+
+    impl AudioManager {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn push_command(&self, command: AudioCommand) {
+            self.commands.lock().push(command);
+        }
+
+        pub fn drain_commands(&self, out: &mut Vec<AudioCommand>) {
+            let mut commands = self.commands.lock();
+            out.extend(commands.drain(..));
+        }
+
+        pub fn master_vol(&self, vol: f32) {
+            self.push_command(AudioCommand::MasterVolume { volume: vol });
+        }
+
+        pub fn tick(&self, _delta_ms: u32) {}
+    }
+}
+
 // ─── Shared no-audio Tween (UEFI and no-audio desktop) ───────────────────────
 
 #[cfg(any(not(feature = "audio"), target_os = "uefi"))]
@@ -85,7 +176,11 @@ mod no_audio_tween {
 
 // ─── Stub AudioManager (no-audio desktop builds) ─────────────────────────────
 
-#[cfg(all(not(feature = "audio"), not(target_os = "uefi")))]
+#[cfg(all(
+    not(feature = "audio"),
+    not(feature = "external-audio"),
+    not(target_os = "uefi")
+))]
 mod stub {
     pub struct AudioManager {
         master_volume: std::sync::Mutex<f32>,
@@ -177,9 +272,22 @@ mod uefi_stub {
 
 #[cfg(all(feature = "audio", feature = "no-audio", not(target_os = "uefi")))]
 compile_error!("features `audio` and `no-audio` are mutually exclusive outside UEFI builds.");
+#[cfg(all(feature = "audio", feature = "external-audio", not(target_os = "uefi")))]
+compile_error!("features `audio` and `external-audio` are mutually exclusive outside UEFI builds.");
 
-#[cfg(all(feature = "audio", not(target_os = "uefi")))]
+#[cfg(all(
+    feature = "audio",
+    not(feature = "external-audio"),
+    not(target_os = "uefi")
+))]
 pub use real::{AudioManager, Tween};
+
+#[cfg(all(
+    feature = "external-audio",
+    not(feature = "no_std"),
+    not(target_os = "uefi")
+))]
+pub use external::{AudioCommand, AudioManager, Tween};
 
 #[cfg(all(target_os = "uefi", feature = "anzu-audio"))]
 pub use anzu::AudioManager;
@@ -188,7 +296,15 @@ pub use no_audio_tween::Tween;
 #[cfg(all(target_os = "uefi", not(feature = "anzu-audio")))]
 pub use uefi_stub::AudioManager;
 
-#[cfg(all(not(feature = "audio"), not(target_os = "uefi")))]
+#[cfg(all(
+    not(feature = "audio"),
+    not(feature = "external-audio"),
+    not(target_os = "uefi")
+))]
 pub use no_audio_tween::Tween;
-#[cfg(all(not(feature = "audio"), not(target_os = "uefi")))]
+#[cfg(all(
+    not(feature = "audio"),
+    not(feature = "external-audio"),
+    not(target_os = "uefi")
+))]
 pub use stub::AudioManager;

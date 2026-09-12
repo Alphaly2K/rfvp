@@ -1,13 +1,18 @@
 // Host-command players for no_std platform builds.
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "external-audio"))]
 #[path = "bgm_player_host.rs"]
 pub mod bgm_player;
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "external-audio"))]
 #[path = "se_player_host.rs"]
 pub mod se_player;
 
 // Real kira-based players (desktop with audio feature)
-#[cfg(all(not(feature = "no_std"), feature = "audio", not(target_os = "uefi")))]
+#[cfg(all(
+    not(feature = "no_std"),
+    not(feature = "external-audio"),
+    feature = "audio",
+    not(target_os = "uefi")
+))]
 pub mod bgm_player;
 // Anzu-HAL players (UEFI with anzu-audio feature)
 #[cfg(all(not(feature = "no_std"), target_os = "uefi", feature = "anzu-audio"))]
@@ -17,6 +22,7 @@ pub mod bgm_player;
 #[cfg(any(
     all(
         not(feature = "no_std"),
+        not(feature = "external-audio"),
         not(feature = "audio"),
         not(target_os = "uefi")
     ),
@@ -30,7 +36,12 @@ pub mod bgm_player;
 pub mod bgm_player;
 
 // Real kira-based players (desktop with audio feature)
-#[cfg(all(not(feature = "no_std"), feature = "audio", not(target_os = "uefi")))]
+#[cfg(all(
+    not(feature = "no_std"),
+    not(feature = "external-audio"),
+    feature = "audio",
+    not(target_os = "uefi")
+))]
 pub mod se_player;
 // Anzu-HAL players (UEFI with anzu-audio feature)
 #[cfg(all(not(feature = "no_std"), target_os = "uefi", feature = "anzu-audio"))]
@@ -40,6 +51,7 @@ pub mod se_player;
 #[cfg(any(
     all(
         not(feature = "no_std"),
+        not(feature = "external-audio"),
         not(feature = "audio"),
         not(target_os = "uefi")
     ),

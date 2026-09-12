@@ -3,7 +3,7 @@ use super::clock::RfvpClock;
 use super::fs::RfvpFileSystem;
 use super::render::RfvpRenderer;
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 use core::ffi::c_void;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +15,7 @@ pub enum RfvpLogLevel {
     Trace,
 }
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum FatalErrorCode {
@@ -23,7 +23,7 @@ pub enum FatalErrorCode {
     InvalidDefaultFont = 2,
 }
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 pub type FatalErrorCallback = extern "C" fn(
     user_data: *mut c_void,
     code: FatalErrorCode,
@@ -31,14 +31,14 @@ pub type FatalErrorCallback = extern "C" fn(
     message_len: usize,
 );
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 #[derive(Debug, Clone, Copy)]
 pub struct PlatformCallbacks {
     pub user_data: *mut c_void,
     pub fatal_error: Option<FatalErrorCallback>,
 }
 
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 impl Default for PlatformCallbacks {
     fn default() -> Self {
         Self {
@@ -64,7 +64,7 @@ pub trait RfvpHost {
 
     fn log(&mut self, _level: RfvpLogLevel, _message: &str) {}
 
-    #[cfg(feature = "no_std")]
+    #[cfg(any(feature = "no_std", feature = "host-runtime"))]
     fn platform_callbacks(&mut self) -> PlatformCallbacks {
         PlatformCallbacks::default()
     }

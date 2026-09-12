@@ -1442,6 +1442,10 @@ impl App {
             .set_hidpi_enabled(enabled);
     }
 
+    pub fn virtual_size(&self) -> (u32, u32) {
+        self.virtual_size
+    }
+
     pub fn text_hidpi_enabled(&self) -> bool {
         let gd = gd_read(&self.game_data);
         gd.motion_manager.text_manager.hidpi_enabled()
@@ -3404,6 +3408,10 @@ pub struct PumpInstance {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl PumpInstance {
+    pub fn virtual_size(&self) -> (u32, u32) {
+        self.app.virtual_size()
+    }
+
     #[cfg(feature = "external-renderer")]
     pub fn capture_external_frame(&mut self) -> crate::rendering::external::ExternalFrame {
         self.app.capture_external_frame()

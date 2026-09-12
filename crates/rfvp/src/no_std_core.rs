@@ -61,6 +61,7 @@ pub struct RfvpBootConfig<'a> {
     pub max_hcb_bytes: usize,
     pub max_manifest_entries: usize,
     pub nls: Nls,
+    pub require_default_font: bool,
 }
 
 impl<'a> Default for RfvpBootConfig<'a> {
@@ -71,6 +72,7 @@ impl<'a> Default for RfvpBootConfig<'a> {
             max_hcb_bytes: 64 * 1024 * 1024,
             max_manifest_entries: 1024,
             nls: Nls::ShiftJIS,
+            require_default_font: true,
         }
     }
 }
@@ -151,6 +153,11 @@ impl RfvpCore {
 
     pub fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    pub fn exit_requested(&self) -> bool {
+        self.quit_requested
+            || (self.game_data.get_lock_scripter() && self.game_data.get_main_thread_exited())
     }
 
     pub fn run_state(&self) -> RfvpCoreRunState {
@@ -268,10 +275,23 @@ impl RfvpCore {
             self.last_error_detail = Some(detail);
             err
         })?;
-        let default_font = load_required_default_font(host).map_err(|(err, detail)| {
-            self.last_error_detail = Some(detail);
-            err
-        })?;
+        let mut fontface_manager = if host.fs().exists("default.ttf") {
+            let default_font = load_required_default_font(host).map_err(|(err, detail)| {
+                self.last_error_detail = Some(detail);
+                err
+            })?;
+            FontEnumerator::from_default_font(default_font)
+        } else if boot.require_default_font {
+            notify_fatal(
+                host.platform_callbacks(),
+                FatalErrorCode::MissingDefaultFont,
+                MISSING_DEFAULT_FONT_MESSAGE,
+            );
+            self.last_error_detail = Some(MISSING_DEFAULT_FONT_MESSAGE.to_string());
+            return Err(RfvpError::NotFound);
+        } else {
+            FontEnumerator::new()
+        };
         let mut screen = parser.get_screen_size();
         #[cfg(feature = "old_school")]
         {
@@ -292,7 +312,7 @@ impl RfvpCore {
         let mut game_data = GameData::default();
         #[cfg(feature = "old_school")]
         game_data.set_old_school_scale(old_school_scale);
-        game_data.fontface_manager = FontEnumerator::from_default_font(default_font);
+        game_data.fontface_manager = fontface_manager;
         game_data.vfs = vfs;
         game_data.nls = boot.nls;
         game_data.set_window(Window::new(screen, 1.0));
@@ -343,6 +363,7 @@ impl RfvpCore {
             host.log(RfvpLogLevel::Info, "quit requested by host event");
         }
 
+        #[cfg(feature = "no_std")]
         crate::platform_time::set_host_time_us(now);
         host.audio().tick(elapsed_us)?;
         if let (Some(parser), Some(vm_runner)) = (self.parser.as_mut(), self.vm_runner.as_mut()) {
@@ -707,13 +728,12 @@ fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpRe
                 .unwrap_or(path.as_str())
                 .strip_suffix(".bin")
                 .unwrap_or(path.as_str());
-            vfs.add_pack_bytes(folder, bytes).map_err(|err| {
+            if let Err(err) = vfs.add_pack_bytes(folder, bytes) {
                 host.log(
                     RfvpLogLevel::Warn,
                     &format!("failed to parse host pack {path}: {err}"),
                 );
-                RfvpError::InvalidData
-            })?;
+            }
         }
         Ok(vfs)
     }

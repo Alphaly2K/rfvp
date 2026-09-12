@@ -742,6 +742,12 @@ impl FontEnumerator {
         }
     }
 
+    pub fn from_default_font(default_font: Font) -> Self {
+        let mut enumerator = Self::new();
+        enumerator.default_font = default_font;
+        enumerator
+    }
+
     pub fn set_system_font_fallback_enabled(&mut self, enabled: bool) {
         self.system_fallback_enabled = enabled;
     }

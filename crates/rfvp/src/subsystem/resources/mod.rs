@@ -1,4 +1,4 @@
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 use alloc::{
     boxed::Box,
     format,
@@ -15,9 +15,9 @@ pub mod input_manager;
 pub mod motion_manager;
 pub mod parts_manager;
 pub mod prim;
-#[cfg(not(feature = "no_std"))]
+#[cfg(not(any(feature = "no_std", feature = "host-runtime")))]
 pub mod save_manager;
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 #[path = "save_manager_host.rs"]
 pub mod save_manager;
 pub mod text_manager;
@@ -26,9 +26,9 @@ pub mod thread_manager;
 pub mod thread_wrapper;
 pub mod time;
 pub mod timer_manager;
-#[cfg(not(feature = "no_std"))]
+#[cfg(not(any(feature = "no_std", feature = "host-runtime")))]
 pub mod vfs;
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 #[path = "vfs_host.rs"]
 pub mod vfs;
 #[cfg(all(
@@ -55,11 +55,12 @@ pub mod videoplayer;
 #[cfg(not(feature = "no_std"))]
 #[path = "videoplayer_wasm.rs"]
 pub mod videoplayer;
-#[cfg(feature = "no_std")]
+#[cfg(any(feature = "no_std", feature = "host-runtime"))]
 #[path = "videoplayer_host.rs"]
 pub mod videoplayer;
 #[cfg(all(
     not(feature = "no_std"),
+    not(feature = "host-runtime"),
     not(any(feature = "native-video", feature = "uefi-native-video"))
 ))]
 #[path = "videoplayer_stub.rs"]
