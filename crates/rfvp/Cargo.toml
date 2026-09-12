@@ -49,7 +49,7 @@ glob = { version = "0.3.1", optional = true }
 atomic_refcell = { version = "0.1.13", optional = true }
 hecs = { version = "0.10.4", default-features = false, optional = true }
 hashbrown = { version = "0.14.5", default-features = false, features = ["ahash"], optional = true }
-image = { version = "0.24.9", default-features = false, optional = true }
+image = { version = "0.25", default-features = false, optional = true }
 bytes = { version = "1.6.0", default-features = false, optional = true }
 bytemuck = { version = "1.14.3", features = ["derive"], optional = true }
 ultraviolet = { version = "0.9.2", optional = true }
@@ -58,7 +58,7 @@ fern = { version = "0.6.2", features = ["colored"], optional = true }
 chrono = { version = "0.4.35", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
-flate2 = { version = "=1.0.28", optional = true }
+flate2 = { version = "1.1", optional = true }
 miniz_oxide = { version = "0.7.4", default-features = false, features = ["with-alloc"], optional = true }
 byteorder = { version = "1.5.0", default-features = false, optional = true }
 rand = { version = "0.8.5", features = ["small_rng"], optional = true }
@@ -169,6 +169,7 @@ runtime-core-deps = [
     "dep:futures",
     "dep:chrono",
     "dep:byteorder",
+    "byteorder/std",
     "dep:lazy_static",
     "dep:ab_glyph",
     "dep:glam",
