@@ -14,6 +14,7 @@ pub type RfvpStatusV1 = i32;
 
 pub const RFVP_STATUS_OK: RfvpStatusV1 = 0;
 pub const RFVP_STATUS_NO_FRAME: RfvpStatusV1 = 1;
+pub const RFVP_STATUS_NO_COMMAND: RfvpStatusV1 = 2;
 pub const RFVP_STATUS_INVALID_ARGUMENT: RfvpStatusV1 = -1;
 pub const RFVP_STATUS_INVALID_HANDLE: RfvpStatusV1 = -2;
 pub const RFVP_STATUS_INVALID_STATE: RfvpStatusV1 = -3;
@@ -117,6 +118,27 @@ pub const RFVP_VOLUME_BGM: u32 = 2;
 pub const RFVP_VOLUME_SE: u32 = 3;
 pub const RFVP_VOLUME_VOICE: u32 = 4;
 
+pub const RFVP_AUDIO_LOAD_ENCODED: u32 = 1;
+pub const RFVP_AUDIO_CREATE_STREAM: u32 = 2;
+pub const RFVP_AUDIO_SUBMIT_I16: u32 = 3;
+pub const RFVP_AUDIO_SUBMIT_F32: u32 = 4;
+pub const RFVP_AUDIO_PLAY: u32 = 5;
+pub const RFVP_AUDIO_STOP: u32 = 6;
+pub const RFVP_AUDIO_PAUSE: u32 = 7;
+pub const RFVP_AUDIO_RESUME: u32 = 8;
+pub const RFVP_AUDIO_SET_PARAMS: u32 = 9;
+pub const RFVP_AUDIO_DESTROY_STREAM: u32 = 10;
+pub const RFVP_AUDIO_MASTER_VOLUME: u32 = 11;
+
+pub const RFVP_AUDIO_SAMPLE_I16: u32 = 1;
+pub const RFVP_AUDIO_SAMPLE_F32: u32 = 2;
+
+pub const RFVP_AUDIO_ENCODED_UNKNOWN: u32 = 0;
+pub const RFVP_AUDIO_ENCODED_WAV: u32 = 1;
+pub const RFVP_AUDIO_ENCODED_OGG: u32 = 2;
+pub const RFVP_AUDIO_ENCODED_MP3: u32 = 3;
+pub const RFVP_AUDIO_ENCODED_FLAC: u32 = 4;
+
 pub const RFVP_DRAW_FLAG_HAS_CLIP: u32 = 1 << 0;
 pub const RFVP_DRAW_FLAG_HAS_MESH: u32 = 1 << 1;
 pub const RFVP_DRAW_FLAG_HAS_EFFECT: u32 = 1 << 2;
@@ -135,6 +157,7 @@ pub const RFVP_CAPABILITY_HIT_PROXIES: u64 = 1 << 6;
 pub const RFVP_CAPABILITY_TEXT_REPLACEMENTS: u64 = 1 << 7;
 pub const RFVP_CAPABILITY_TEXT_TRANSLATION: u64 = 1 << 8;
 pub const RFVP_CAPABILITY_NATIVE_SURFACE: u64 = 1 << 9;
+pub const RFVP_CAPABILITY_AUDIO_COMMANDS: u64 = 1 << 10;
 
 pub const RFVP_TEXTURE_ID_WHITE: u32 = u32::MAX;
 
@@ -173,6 +196,26 @@ pub struct RfvpInputEventV1 {
     pub value: i32,
     pub modifiers: u32,
     pub id: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RfvpAudioCommandV1 {
+    pub struct_size: u32,
+    pub kind: u32,
+    pub stream_id: u32,
+    pub sample_format: u32,
+    pub encoded_kind: u32,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub repeat: u32,
+    pub fade_ms: u32,
+    pub volume: f32,
+    pub pan: f32,
+    pub sample_count: usize,
+    pub payload: *const u8,
+    pub payload_size: usize,
+    pub reserved: [u64; 2],
 }
 
 #[repr(C)]
@@ -340,6 +383,8 @@ pub type RfvpRuntimeSetMediaEnabledFn = unsafe extern "C" fn(runtime: u64, enabl
 pub type RfvpRuntimeNotifyLifecycleFn = unsafe extern "C" fn(runtime: u64, state: i32) -> i32;
 pub type RfvpRuntimeSetVolumeFn =
     unsafe extern "C" fn(runtime: u64, channel: u32, value: f32) -> i32;
+pub type RfvpRuntimePollAudioCommandFn =
+    unsafe extern "C" fn(runtime: u64, out_command: *mut RfvpAudioCommandV1) -> i32;
 pub type RfvpRuntimeCapabilitiesFn = unsafe extern "C" fn(runtime: u64) -> u64;
 pub type RfvpRuntimeAcquireFrameFn = unsafe extern "C" fn(runtime: u64, out_frame: *mut u64) -> i32;
 
@@ -393,6 +438,7 @@ pub struct RfvpApiV1 {
     pub runtime_set_media_enabled: Option<RfvpRuntimeSetMediaEnabledFn>,
     pub runtime_notify_lifecycle: Option<RfvpRuntimeNotifyLifecycleFn>,
     pub runtime_set_volume: Option<RfvpRuntimeSetVolumeFn>,
+    pub runtime_poll_audio_command: Option<RfvpRuntimePollAudioCommandFn>,
     pub runtime_capabilities: Option<RfvpRuntimeCapabilitiesFn>,
     pub runtime_acquire_frame: Option<RfvpRuntimeAcquireFrameFn>,
 
@@ -453,6 +499,7 @@ pub(crate) static API_V1: RfvpApiV1 = RfvpApiV1 {
     runtime_set_media_enabled: None,
     runtime_notify_lifecycle: None,
     runtime_set_volume: None,
+    runtime_poll_audio_command: host_runtime_entry!(super::runtime::rfvp_runtime_poll_audio_command),
     runtime_capabilities: host_runtime_entry!(super::runtime::rfvp_runtime_capabilities),
     runtime_acquire_frame: host_runtime_entry!(super::runtime::rfvp_runtime_acquire_frame),
     frame_release: host_runtime_entry!(super::runtime::rfvp_frame_release),
@@ -511,6 +558,7 @@ mod tests {
             assert!(api.resources_create.is_some());
             assert!(api.runtime_create.is_some());
             assert!(api.runtime_step.is_some());
+            assert!(api.runtime_poll_audio_command.is_some());
             assert!(api.frame_release.is_some());
             assert!(api.runtime_push_input.is_none());
         }

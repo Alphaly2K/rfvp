@@ -15,21 +15,27 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use crate::host_abi::v1::{
-    RfvpColorV1, RfvpDrawCommandV1, RfvpHitProxyV1, RfvpRectI32V1, RfvpRectU16V1,
-    RfvpResourcesConfigV1, RfvpRuntimeConfigV1, RfvpTextureCommandV1, RfvpVertexV1,
+    RfvpAudioCommandV1, RfvpColorV1, RfvpDrawCommandV1, RfvpHitProxyV1, RfvpRectI32V1,
+    RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1, RfvpTextureCommandV1, RfvpVertexV1,
+    RFVP_AUDIO_CREATE_STREAM, RFVP_AUDIO_DESTROY_STREAM, RFVP_AUDIO_ENCODED_FLAC,
+    RFVP_AUDIO_ENCODED_MP3, RFVP_AUDIO_ENCODED_OGG, RFVP_AUDIO_ENCODED_UNKNOWN,
+    RFVP_AUDIO_ENCODED_WAV, RFVP_AUDIO_LOAD_ENCODED, RFVP_AUDIO_MASTER_VOLUME, RFVP_AUDIO_PAUSE,
+    RFVP_AUDIO_PLAY, RFVP_AUDIO_RESUME, RFVP_AUDIO_SAMPLE_F32, RFVP_AUDIO_SAMPLE_I16,
+    RFVP_AUDIO_SET_PARAMS, RFVP_AUDIO_STOP, RFVP_AUDIO_SUBMIT_F32, RFVP_AUDIO_SUBMIT_I16,
     RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY,
     RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT, RFVP_CAPABILITY_DRAW_GLYPH,
     RFVP_CAPABILITY_DRAW_IMAGE, RFVP_CAPABILITY_HIT_PROXIES, RFVP_CAPABILITY_TEXTURES,
     RFVP_DRAW_FLAG_HAS_CLIP, RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE,
     RFVP_INVALID_HANDLE, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK, RFVP_NLS_SHIFT_JIS, RFVP_NLS_UTF8,
     RFVP_STATUS_BUSY, RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT, RFVP_STATUS_INVALID_DATA,
-    RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND, RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK,
-    RFVP_STATUS_OUT_OF_MEMORY, RFVP_STATUS_UNSUPPORTED, RFVP_TEXTURE_CREATE,
+    RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND, RFVP_STATUS_NO_COMMAND, RFVP_STATUS_NO_FRAME,
+    RFVP_STATUS_OK, RFVP_STATUS_OUT_OF_MEMORY, RFVP_STATUS_UNSUPPORTED, RFVP_TEXTURE_CREATE,
     RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8, RFVP_TEXTURE_FORMAT_RGBA8,
+    RFVP_CAPABILITY_AUDIO_COMMANDS,
 };
 use crate::host_abi::{Handle, HandleRegistry};
 use crate::host_api::{
-    AudioParams, AudioStreamDesc, AudioStreamId, BlendMode, ColorRgba, CommandBlendMode,
+    AudioParams, AudioSampleFormat, AudioStreamDesc, AudioStreamId, BlendMode, ColorRgba, CommandBlendMode,
     DrawGlyphCmd, DrawImageCmd, DrawSolidCommand, DrawSpriteCommand, EncodedAudioKind,
     PixelFormat, PortableTextureDesc, RectI16, RectU16, RenderCommand, RfvpAudio, RfvpClock,
     RfvpError, RfvpFile, RfvpFileInfo, RfvpFileKind, RfvpFileSystem, RfvpHost, RfvpLogLevel,
@@ -63,6 +69,7 @@ struct HostRuntime {
     host: HostPlatform,
     pending_frame: Option<ExternalFrame>,
     audio_commands: VecDeque<AudioCommand>,
+    pending_audio_command: Option<PendingAudioCommand>,
     audio_queue_overflowed: bool,
     width: u32,
     height: u32,
@@ -81,6 +88,11 @@ struct HostFrame {
 }
 
 const MAX_PENDING_AUDIO_COMMANDS: usize = 1024;
+
+struct PendingAudioCommand {
+    command: RfvpAudioCommandV1,
+    payload: Vec<u8>,
+}
 
 struct HostPlatform {
     filesystem: HostFileSystem,
@@ -959,6 +971,128 @@ impl HostFrame {
     }
 }
 
+fn encoded_audio_kind(kind: EncodedAudioKind) -> u32 {
+    match kind {
+        EncodedAudioKind::Unknown => RFVP_AUDIO_ENCODED_UNKNOWN,
+        EncodedAudioKind::Wav => RFVP_AUDIO_ENCODED_WAV,
+        EncodedAudioKind::Ogg => RFVP_AUDIO_ENCODED_OGG,
+        EncodedAudioKind::Mp3 => RFVP_AUDIO_ENCODED_MP3,
+        EncodedAudioKind::Flac => RFVP_AUDIO_ENCODED_FLAC,
+    }
+}
+
+fn audio_sample_format(format: AudioSampleFormat) -> u32 {
+    match format {
+        AudioSampleFormat::I16 => RFVP_AUDIO_SAMPLE_I16,
+        AudioSampleFormat::F32 => RFVP_AUDIO_SAMPLE_F32,
+    }
+}
+
+fn empty_audio_command(kind: u32, stream_id: u32) -> RfvpAudioCommandV1 {
+    RfvpAudioCommandV1 {
+        struct_size: size_of::<RfvpAudioCommandV1>() as u32,
+        kind,
+        stream_id,
+        sample_format: 0,
+        encoded_kind: 0,
+        sample_rate: 0,
+        channels: 0,
+        repeat: 0,
+        fade_ms: 0,
+        volume: 1.0,
+        pan: 0.0,
+        sample_count: 0,
+        payload: std::ptr::null(),
+        payload_size: 0,
+        reserved: [0; 2],
+    }
+}
+
+fn pending_audio_command(command: AudioCommand) -> PendingAudioCommand {
+    let mut payload = Vec::new();
+    let mut output = empty_audio_command(0, 0);
+    match command {
+        AudioCommand::LoadEncoded { id, kind, bytes } => {
+            output.kind = RFVP_AUDIO_LOAD_ENCODED;
+            output.stream_id = id.0;
+            output.encoded_kind = encoded_audio_kind(kind);
+            payload = bytes;
+        }
+        AudioCommand::CreateStream { id, desc } => {
+            output.kind = RFVP_AUDIO_CREATE_STREAM;
+            output.stream_id = id.0;
+            output.sample_format = audio_sample_format(desc.sample_format);
+            output.sample_rate = desc.sample_rate;
+            output.channels = desc.channels as u32;
+        }
+        AudioCommand::SubmitI16 { id, samples } => {
+            output.kind = RFVP_AUDIO_SUBMIT_I16;
+            output.stream_id = id.0;
+            output.sample_format = RFVP_AUDIO_SAMPLE_I16;
+            output.sample_count = samples.len();
+            payload.reserve(samples.len().saturating_mul(2));
+            for sample in samples {
+                payload.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        AudioCommand::SubmitF32 { id, samples } => {
+            output.kind = RFVP_AUDIO_SUBMIT_F32;
+            output.stream_id = id.0;
+            output.sample_format = RFVP_AUDIO_SAMPLE_F32;
+            output.sample_count = samples.len();
+            payload.reserve(samples.len().saturating_mul(4));
+            for sample in samples {
+                payload.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        AudioCommand::Play {
+            id,
+            params,
+            fade_in_ms,
+        } => {
+            output.kind = RFVP_AUDIO_PLAY;
+            output.stream_id = id.0;
+            output.volume = params.volume;
+            output.pan = params.pan;
+            output.repeat = u32::from(params.repeat);
+            output.fade_ms = fade_in_ms;
+        }
+        AudioCommand::Stop { id, fade_ms } => {
+            output.kind = RFVP_AUDIO_STOP;
+            output.stream_id = id.0;
+            output.fade_ms = fade_ms;
+        }
+        AudioCommand::Pause { id } => {
+            output.kind = RFVP_AUDIO_PAUSE;
+            output.stream_id = id.0;
+        }
+        AudioCommand::Resume { id } => {
+            output.kind = RFVP_AUDIO_RESUME;
+            output.stream_id = id.0;
+        }
+        AudioCommand::SetParams { id, params } => {
+            output.kind = RFVP_AUDIO_SET_PARAMS;
+            output.stream_id = id.0;
+            output.volume = params.volume;
+            output.pan = params.pan;
+            output.repeat = u32::from(params.repeat);
+        }
+        AudioCommand::DestroyStream { id } => {
+            output.kind = RFVP_AUDIO_DESTROY_STREAM;
+            output.stream_id = id.0;
+        }
+        AudioCommand::MasterVolume { volume } => {
+            output.kind = RFVP_AUDIO_MASTER_VOLUME;
+            output.volume = volume;
+        }
+    }
+    output.payload_size = payload.len();
+    PendingAudioCommand {
+        command: output,
+        payload,
+    }
+}
+
 pub unsafe extern "C" fn rfvp_resources_create(
     config: *const RfvpResourcesConfigV1,
     out_resources: *mut u64,
@@ -1149,6 +1283,7 @@ pub unsafe extern "C" fn rfvp_runtime_create(
                 host,
                 pending_frame: None,
                 audio_commands: VecDeque::new(),
+                pending_audio_command: None,
                 audio_queue_overflowed: false,
                 width,
                 height,
@@ -1211,6 +1346,35 @@ pub unsafe extern "C" fn rfvp_runtime_is_exit_requested(runtime: u64) -> i32 {
     }))
 }
 
+pub unsafe extern "C" fn rfvp_runtime_poll_audio_command(
+    runtime: u64,
+    out_command: *mut RfvpAudioCommandV1,
+) -> i32 {
+    guard_status(|| {
+        if out_command.is_null() {
+            return RFVP_STATUS_INVALID_ARGUMENT;
+        }
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            let Some(command) = runtime.audio_commands.pop_front() else {
+                return RFVP_STATUS_NO_COMMAND;
+            };
+            let mut pending = pending_audio_command(command);
+            pending.command.payload = pending.payload.as_ptr();
+            runtime.pending_audio_command = Some(pending);
+            let Some(pending) = runtime.pending_audio_command.as_ref() else {
+                return RFVP_STATUS_ENGINE;
+            };
+            unsafe {
+                *out_command = pending.command;
+            }
+            RFVP_STATUS_OK
+        })
+    })
+}
+
 pub unsafe extern "C" fn rfvp_runtime_capabilities(runtime: u64) -> u64 {
     guard_u64(|| with_state(|state| {
         state
@@ -1221,6 +1385,7 @@ pub unsafe extern "C" fn rfvp_runtime_capabilities(runtime: u64) -> u64 {
                     | RFVP_CAPABILITY_DRAW_IMAGE
                     | RFVP_CAPABILITY_DRAW_GLYPH
                     | RFVP_CAPABILITY_HIT_PROXIES
+                    | RFVP_CAPABILITY_AUDIO_COMMANDS
             })
             .unwrap_or(0)
     }))
@@ -1437,5 +1602,20 @@ mod tests {
         let status = unsafe { rfvp_runtime_create(&config, &mut runtime) };
         assert_eq!(status, RFVP_STATUS_INVALID_HANDLE);
         assert_eq!(runtime, 0);
+    }
+
+    #[test]
+    fn audio_command_conversion_preserves_stream_and_payload() {
+        let pending = pending_audio_command(AudioCommand::LoadEncoded {
+            id: crate::host_api::AudioStreamId::bgm(3),
+            kind: crate::host_api::EncodedAudioKind::Ogg,
+            bytes: vec![1, 2, 3, 4],
+        });
+
+        assert_eq!(pending.command.kind, RFVP_AUDIO_LOAD_ENCODED);
+        assert_eq!(pending.command.stream_id, 3);
+        assert_eq!(pending.command.encoded_kind, RFVP_AUDIO_ENCODED_OGG);
+        assert_eq!(pending.command.payload_size, 4);
+        assert_eq!(pending.payload, vec![1, 2, 3, 4]);
     }
 }
