@@ -1447,6 +1447,48 @@ impl App {
         gd.motion_manager.text_manager.hidpi_enabled()
     }
 
+    pub fn set_text_replacements(&mut self, replacements: HashMap<String, String>) {
+        let mut gd = gd_write(&self.game_data);
+        gd.motion_manager
+            .text_manager
+            .set_text_replacements(replacements);
+    }
+
+    pub fn clear_text_replacements(&mut self) {
+        let mut gd = gd_write(&self.game_data);
+        gd.motion_manager.text_manager.clear_text_replacements();
+    }
+
+    pub fn set_text_translation_online_enabled(&mut self, enabled: bool) {
+        let mut gd = gd_write(&self.game_data);
+        gd.motion_manager
+            .text_manager
+            .set_text_translation_online_enabled(enabled);
+    }
+
+    pub fn text_translation_online_enabled(&self) -> bool {
+        let gd = gd_read(&self.game_data);
+        gd.motion_manager
+            .text_manager
+            .text_translation_online_enabled()
+    }
+
+    pub fn drain_text_translation_requests(
+        &mut self,
+    ) -> Vec<crate::text_translation::TextTranslationRequest> {
+        let mut gd = gd_write(&self.game_data);
+        gd.motion_manager
+            .text_manager
+            .drain_text_translation_requests()
+    }
+
+    pub fn submit_text_translation(&mut self, serial: u64, translated: Option<&str>) -> bool {
+        let mut gd = gd_write(&self.game_data);
+        gd.motion_manager
+            .text_manager
+            .submit_text_translation(serial, translated)
+    }
+
     /// Step the engine once in a host-driven environment (e.g. SwiftUI/UIKit on iOS).
     ///
     /// The host is responsible for calling this at a stable cadence (e.g. via CADisplayLink).
@@ -3378,6 +3420,32 @@ impl PumpInstance {
 
     pub fn text_hidpi_enabled(&self) -> bool {
         self.app.text_hidpi_enabled()
+    }
+
+    pub fn set_text_replacements(&mut self, replacements: HashMap<String, String>) {
+        self.app.set_text_replacements(replacements);
+    }
+
+    pub fn clear_text_replacements(&mut self) {
+        self.app.clear_text_replacements();
+    }
+
+    pub fn set_text_translation_online_enabled(&mut self, enabled: bool) {
+        self.app.set_text_translation_online_enabled(enabled);
+    }
+
+    pub fn text_translation_online_enabled(&self) -> bool {
+        self.app.text_translation_online_enabled()
+    }
+
+    pub fn drain_text_translation_requests(
+        &mut self,
+    ) -> Vec<crate::text_translation::TextTranslationRequest> {
+        self.app.drain_text_translation_requests()
+    }
+
+    pub fn submit_text_translation(&mut self, serial: u64, translated: Option<&str>) -> bool {
+        self.app.submit_text_translation(serial, translated)
     }
 
     /// Pump window/system events and drive one iteration of the application.

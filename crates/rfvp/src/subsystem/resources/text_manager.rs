@@ -15,6 +15,7 @@ use std::{
 use super::gaiji_manager::GaijiManager;
 #[cfg(not(feature = "no_std"))]
 use crate::utils::file::app_base_path;
+use crate::text_translation::{TextTranslationController, TextTranslationRequest};
 use crate::{font::Font, subsystem::resources::color_manager::ColorItem};
 use anyhow::{anyhow, bail, Result};
 #[cfg(feature = "no_std")]
@@ -1185,6 +1186,8 @@ pub struct TextItem {
     surface_height_px: u32,
     dirty: bool,
     elapsed: u32,
+    translation_generation: u64,
+    translation_show_complete: bool,
 
     // reveal-by-time state (column sweep)
     // total_chars: total required reveal columns in pixels across all lines (computed during rasterization)
@@ -1256,6 +1259,8 @@ impl TextItem {
             surface_height_px: 0,
             dirty: false,
             elapsed: 0,
+            translation_generation: 0,
+            translation_show_complete: false,
             total_chars: 0,
             visible_chars: 0,
             wait_points: vec![],
@@ -1282,6 +1287,14 @@ impl TextItem {
 
     pub fn get_suspend(&self) -> bool {
         self.is_suspended
+    }
+
+    fn next_translation_generation(&mut self) -> u64 {
+        self.translation_generation = self.translation_generation.wrapping_add(1);
+        if self.translation_generation == 0 {
+            self.translation_generation = 1;
+        }
+        self.translation_generation
     }
 
     pub fn set_suspend(&mut self, suspend: bool) {
@@ -1806,6 +1819,7 @@ impl TextItem {
             self.visible_chars = 0;
         }
         self.elapsed = 0;
+        self.translation_show_complete = false;
         self.mark_layout_dirty();
     }
 
@@ -2929,13 +2943,13 @@ impl TextItem {
 
         line_has_any = false;
         self.total_chars = total_required_units.max(0) as usize;
-        if self.speed == 0 {
+        if self.speed == 0 || self.translation_show_complete {
             self.visible_chars = self.total_chars;
         } else if self.visible_chars > self.total_chars {
             self.visible_chars = self.total_chars;
         }
 
-        if self.speed == 0 {
+        if self.speed == 0 || self.translation_show_complete {
             if let Some(bounds) = Self::alpha_bounds(&full_buffer, bw, bh) {
                 self.surface_origin_x_px = bounds.x.max(0) as u32;
                 self.surface_origin_y_px = bounds.y.max(0) as u32;
@@ -2952,6 +2966,7 @@ impl TextItem {
             self.full_buffer = Vec::new();
             self.reveal_queue.clear();
             self.applied_visible_chars = self.total_chars;
+            self.translation_show_complete = false;
         } else {
             self.surface_origin_x_px = 0;
             self.surface_origin_y_px = 0;
@@ -2998,6 +3013,7 @@ pub struct TextManager {
     device_render_scale: f32,
     render_scale: f32,
     hidpi_enabled: bool,
+    text_translation: TextTranslationController,
 }
 
 impl Default for TextManager {
@@ -3014,7 +3030,68 @@ impl TextManager {
             device_render_scale: 1.0,
             render_scale: 1.0,
             hidpi_enabled: true,
+            text_translation: TextTranslationController::default(),
         }
+    }
+
+    pub fn set_text_replacements<I>(&mut self, replacements: I)
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        self.text_translation.set_replacements(replacements);
+    }
+
+    pub fn clear_text_replacements(&mut self) {
+        self.text_translation.clear_replacements();
+    }
+
+    pub fn set_text_translation_online_enabled(&mut self, enabled: bool) {
+        self.text_translation.set_online_enabled(enabled);
+    }
+
+    pub fn text_translation_online_enabled(&self) -> bool {
+        self.text_translation.online_enabled()
+    }
+
+    pub fn drain_text_translation_requests(&mut self) -> Vec<TextTranslationRequest> {
+        self.text_translation.drain_requests()
+    }
+
+    pub fn submit_text_translation(&mut self, serial: u64, translated: Option<&str>) -> bool {
+        self.text_translation
+            .submit(serial, translated.map(ToString::to_string))
+    }
+
+    pub fn pending_text_translation_count(&self) -> usize {
+        self.text_translation.pending_count()
+    }
+
+    /// Applies completed translations once the original text has finished its
+    /// reveal. Returns whether any slot was re-rendered.
+    pub fn apply_ready_text_translations(&mut self) -> bool {
+        let mut changed = false;
+        for slot in 0..self.items.len() {
+            let Some(generation) = ({
+                let item = &self.items[slot];
+                (item.loaded && item.reveal_is_complete())
+                    .then_some(item.translation_generation)
+            }) else {
+                continue;
+            };
+            let Some(translated) = self
+                .text_translation
+                .take_ready(slot as u32, generation)
+            else {
+                continue;
+            };
+            if self.items[slot].content_text == translated {
+                continue;
+            }
+            self.items[slot].parse_content_text(&translated);
+            self.items[slot].translation_show_complete = true;
+            changed = true;
+        }
+        changed
     }
 
     pub fn set_render_scale(&mut self, render_scale: f32) {
@@ -3180,6 +3257,9 @@ impl TextManager {
 
     pub fn set_text_clear(&mut self, id: i32) {
         let text = &mut self.items[id as usize];
+        text.next_translation_generation();
+        text.translation_show_complete = false;
+        self.text_translation.invalidate_slot(id as u32);
         if text.get_loaded() {
             text.clear_buffer();
             text.text_content.clear();
@@ -3204,6 +3284,9 @@ impl TextManager {
 
     pub fn set_text_buff(&mut self, id: i32, w: i32, h: i32) {
         let text = &mut self.items[id as usize];
+        text.next_translation_generation();
+        text.translation_show_complete = false;
+        self.text_translation.invalidate_slot(id as u32);
         text.set_w(w.max(0) as u16);
         text.set_h(h.max(0) as u16);
         text.set_render_scale(self.render_scale);
@@ -3351,7 +3434,16 @@ impl TextManager {
     }
 
     pub fn set_text_content(&mut self, id: i32, content_text: &str) {
-        self.items[id as usize].parse_content_text(content_text);
+        let text = &mut self.items[id as usize];
+        let generation = text.next_translation_generation();
+        let replacement = self.text_translation.begin_source(
+            id as u32,
+            generation,
+            content_text,
+            None,
+        );
+        let rendered = replacement.as_deref().unwrap_or(content_text);
+        text.parse_content_text(rendered);
     }
 
     pub fn set_text_special_unit_mode(&mut self, id: i32, func: u8) {
@@ -3602,6 +3694,7 @@ impl TextItem {
 
         self.text_content = snap.text_content.clone();
         self.content_text = snap.content_text.clone();
+        self.translation_show_complete = false;
 
         self.text_font_idx1 = snap.text_font_idx1;
         self.text_font_idx2 = snap.text_font_idx2;
@@ -3670,6 +3763,7 @@ impl TextManager {
     }
 
     pub fn apply_snapshot_v1(&mut self, snap: &TextManagerSnapshotV1) {
+        self.text_translation.clear();
         // Resize if needed, but keep at least 32.
         if self.items.len() != snap.items.len() {
             self.items = vec![TextItem::new(); snap.items.len().max(32)];
@@ -3678,6 +3772,7 @@ impl TextManager {
         let n = self.items.len().min(snap.items.len());
         for i in 0..n {
             self.items[i].apply_snapshot_v1(&snap.items[i]);
+            self.items[i].next_translation_generation();
             self.items[i].set_render_scale(self.render_scale);
         }
 
@@ -3804,5 +3899,81 @@ mod hidpi_surface_tests {
         manager.set_hidpi_enabled(true);
         assert!(manager.hidpi_enabled());
         assert_eq!(manager.items[20].raster_dimensions(), (1620, 240));
+    }
+
+    #[test]
+    fn text_replacement_is_applied_before_layout() {
+        let mut manager = TextManager::new();
+        manager.set_text_buff(0, 100, 40);
+        manager.set_text_replacements([("original".to_string(), "translated".to_string())]);
+
+        manager.set_text_content(0, "original");
+
+        assert_eq!(manager.items[0].content_text, "translated");
+        assert!(manager.drain_text_translation_requests().is_empty());
+        assert_eq!(manager.pending_text_translation_count(), 0);
+    }
+
+    #[test]
+    fn online_translation_is_applied_when_the_request_matches() {
+        let mut manager = TextManager::new();
+        manager.set_text_buff(1, 100, 40);
+        manager.set_text_translation_online_enabled(true);
+        manager.set_text_content(1, "original");
+
+        let request = manager.drain_text_translation_requests().pop().unwrap();
+        assert_eq!(request.slot, 1);
+        assert_eq!(request.source, "original");
+        assert_eq!(manager.items[1].content_text, "original");
+
+        assert!(manager.submit_text_translation(request.serial, Some("translated")));
+        assert!(manager.apply_ready_text_translations());
+        assert_eq!(manager.items[1].content_text, "translated");
+        assert!(!manager.apply_ready_text_translations());
+    }
+
+    #[test]
+    fn online_translation_waits_for_the_original_reveal() {
+        let mut manager = TextManager::new();
+        manager.set_text_buff(3, 100, 40);
+        manager.set_text_translation_online_enabled(true);
+        manager.set_text_content(3, "original");
+        let request = manager.drain_text_translation_requests().pop().unwrap();
+
+        {
+            let item = &mut manager.items[3];
+            item.total_chars = 10;
+            item.visible_chars = 4;
+        }
+        assert!(manager.submit_text_translation(request.serial, Some("translated")));
+        assert!(!manager.apply_ready_text_translations());
+        assert_eq!(manager.items[3].content_text, "original");
+
+        manager.items[3].visible_chars = 10;
+        assert!(manager.apply_ready_text_translations());
+        assert_eq!(manager.items[3].content_text, "translated");
+    }
+
+    #[test]
+    fn newer_print_and_clear_invalidate_old_translation_results() {
+        let mut manager = TextManager::new();
+        manager.set_text_buff(2, 100, 40);
+        manager.set_text_translation_online_enabled(true);
+
+        manager.set_text_content(2, "first");
+        let first = manager.drain_text_translation_requests().pop().unwrap();
+        manager.set_text_content(2, "second");
+        let second = manager.drain_text_translation_requests().pop().unwrap();
+
+        assert!(!manager.submit_text_translation(first.serial, Some("first translated")));
+        assert!(manager.submit_text_translation(second.serial, Some("second translated")));
+        assert!(manager.apply_ready_text_translations());
+        assert_eq!(manager.items[2].content_text, "second translated");
+
+        manager.set_text_content(2, "third");
+        let third = manager.drain_text_translation_requests().pop().unwrap();
+        manager.set_text_clear(2);
+        assert!(!manager.submit_text_translation(third.serial, Some("third translated")));
+        assert!(manager.items[2].content_text.is_empty());
     }
 }

@@ -896,6 +896,7 @@ pub mod debug_ui {
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 pub mod exit_confirm_ui;
 pub mod font;
+pub mod text_translation;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 pub mod legacy_save_load_ui;
 pub(crate) mod platform_random;

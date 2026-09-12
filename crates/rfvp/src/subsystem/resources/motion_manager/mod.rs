@@ -259,6 +259,7 @@ impl MotionManager {
             self.text_manager
                 .tick(elapsed as u32, global_speed_var0, release_special_wait);
         }
+        self.text_manager.apply_ready_text_translations();
         self.text_reprint(fonts);
         self.text_manager.collect_completed_sync_print_waiters()
     }
