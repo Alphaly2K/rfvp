@@ -4,10 +4,11 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::script::parser::Nls;
 use crate::utils::stable_hash::StableHashMap;
+use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
@@ -15,6 +16,77 @@ pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
 pub type VfsStream = Box<dyn ReadSeek + Send + Sync>;
+
+/// A seekable view over a byte range inside a pack file.
+///
+/// Host packs stay on disk; individual resources are exposed as slices instead
+/// of being copied into memory when opened.
+#[derive(Debug)]
+struct HostSubFile {
+    file: File,
+    start: u64,
+    len: u64,
+    pos: u64,
+}
+
+impl HostSubFile {
+    fn new(mut file: File, start: u64, len: u64) -> Result<Self> {
+        let file_len = file.metadata()?.len();
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("pack slice overflow: start={start} len={len}"))?;
+        if end > file_len {
+            bail!(
+                "pack slice out of range: start={start} len={len} file_size={file_len}"
+            );
+        }
+        file.seek(SeekFrom::Start(start))?;
+        Ok(Self {
+            file,
+            start,
+            len,
+            pos: 0,
+        })
+    }
+
+    fn clamp_pos(&self, pos: i128) -> u64 {
+        if pos <= 0 {
+            return 0;
+        }
+        let pos = pos as u128;
+        if pos >= self.len as u128 {
+            return self.len;
+        }
+        pos as u64
+    }
+}
+
+impl Read for HostSubFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.len {
+            return Ok(0);
+        }
+        let remain = (self.len - self.pos) as usize;
+        let to_read = buf.len().min(remain);
+        self.file.seek(SeekFrom::Start(self.start + self.pos))?;
+        let read = self.file.read(&mut buf[..to_read])?;
+        self.pos += read as u64;
+        Ok(read)
+    }
+}
+
+impl Seek for HostSubFile {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(offset) => self.clamp_pos(offset as i128),
+            SeekFrom::End(delta) => self.clamp_pos(self.len as i128 + delta as i128),
+            SeekFrom::Current(delta) => self.clamp_pos(self.pos as i128 + delta as i128),
+        };
+        self.pos = next;
+        self.file.seek(SeekFrom::Start(self.start + self.pos))?;
+        Ok(self.pos)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct VfsEntry {
@@ -30,22 +102,22 @@ pub struct VfsFile {
     pub filename_table_size: u64,
     pub entries: StableHashMap<String, VfsEntry>,
     pub nls: Nls,
-    pack_bytes: Vec<u8>,
     overrides: StableHashMap<String, Vec<u8>>,
 }
 
 impl VfsFile {
-    pub fn from_pack_bytes(folder_name: String, pack_bytes: Vec<u8>, nls: Nls) -> Result<Self> {
-        let mut cursor = Cursor::new(pack_bytes.clone());
-        let (file_count, filename_table_size, entries) = Self::parse_reader(&mut cursor, nls)?;
+    pub fn from_pack_path(path: PathBuf, folder_name: String, nls: Nls) -> Result<Self> {
+        let mut file = File::open(&path)
+            .with_context(|| format!("open host pack {}", path.display()))?;
+        let (file_count, filename_table_size, entries) = Self::parse_reader(&mut file, nls)
+            .with_context(|| format!("parse host pack {}", path.display()))?;
         Ok(Self {
-            path: PathBuf::from(format!("{folder_name}.bin").as_str()),
+            path,
             folder_name,
             file_count,
             filename_table_size,
             entries,
             nls,
-            pack_bytes,
             overrides: StableHashMap::default(),
         })
     }
@@ -154,23 +226,12 @@ impl VfsFile {
             .entries
             .get(name)
             .ok_or_else(|| anyhow!("file not found in host pack {}: {}", self.folder_name, name))?;
-        let start = usize::try_from(ent.offset).map_err(|_| anyhow!("pack offset too large"))?;
-        let size = usize::try_from(ent.size).map_err(|_| anyhow!("pack entry too large"))?;
-        let end = start
-            .checked_add(size)
-            .ok_or_else(|| anyhow!("pack entry overflow"))?;
-        if end > self.pack_bytes.len() {
-            bail!(
-                "pack entry out of range: {}/{} offset={} size={} pack_size={}",
-                self.folder_name,
-                name,
-                ent.offset,
-                ent.size,
-                self.pack_bytes.len()
-            );
-        }
+        let file = File::open(&self.path)
+            .with_context(|| format!("open host pack {}", self.path.display()))?;
+        let sub_file = HostSubFile::new(file, ent.offset, ent.size)
+            .with_context(|| format!("open pack entry {}/{}", self.folder_name, name))?;
         Ok((
-            Box::new(Cursor::new(self.pack_bytes[start..end].to_vec())),
+            Box::new(sub_file),
             Some(ent.size),
         ))
     }
@@ -221,12 +282,12 @@ impl Vfs {
         self.loose_files.insert(normalize_vfs_key(path), bytes);
     }
 
-    pub fn add_pack_bytes(&mut self, folder_name: &str, bytes: Vec<u8>) -> Result<()> {
+    pub fn add_pack_file(&mut self, path: PathBuf, folder_name: &str) -> Result<()> {
         let folder = folder_name
             .strip_suffix(".bin")
             .unwrap_or(folder_name)
             .to_ascii_lowercase();
-        let file = VfsFile::from_pack_bytes(folder.clone(), bytes, self.nls)?;
+        let file = VfsFile::from_pack_path(path, folder.clone(), self.nls)?;
         self.files.insert(folder, file);
         Ok(())
     }

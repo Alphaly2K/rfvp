@@ -757,15 +757,14 @@ fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpRe
                 .enumerate_by_extension(boot.asset_root, "bin", visitor)?;
         }
         for path in packs {
-            let mut file = host.fs().open(&path)?;
-            let bytes = file.read_to_vec(usize::MAX)?;
             let folder = path
                 .rsplit('/')
                 .next()
                 .unwrap_or(path.as_str())
                 .strip_suffix(".bin")
                 .unwrap_or(path.as_str());
-            if let Err(err) = vfs.add_pack_bytes(folder, bytes) {
+            let pack_path = std::path::Path::new(boot.asset_root).join(&path);
+            if let Err(err) = vfs.add_pack_file(pack_path, folder) {
                 host.log(
                     RfvpLogLevel::Warn,
                     &format!("failed to parse host pack {path}: {err}"),
