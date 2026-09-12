@@ -240,7 +240,9 @@ impl Vfs {
             ));
         }
 
-        let (folder, inner) = key
+        let normalized = path.replace('\\', "/");
+        let normalized = normalized.trim_start_matches("./").trim_start_matches('/');
+        let (folder, inner) = normalized
             .split_once('/')
             .ok_or_else(|| anyhow!("file not found: {}", path))?;
         let file = self
@@ -263,8 +265,10 @@ impl Vfs {
 
     pub fn save(&mut self, path: &str, content: Vec<u8>) -> Result<()> {
         let key = normalize_vfs_key(path);
-        if let Some((folder, inner)) = key.split_once('/') {
-            if let Some(file) = self.files.get_mut(folder) {
+        let normalized = path.replace('\\', "/");
+        let normalized = normalized.trim_start_matches("./").trim_start_matches('/');
+        if let Some((folder, inner)) = normalized.split_once('/') {
+            if let Some(file) = self.files.get_mut(&folder.to_ascii_lowercase()) {
                 file.save(inner, content)?;
                 return Ok(());
             }
