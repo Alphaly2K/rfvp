@@ -144,6 +144,12 @@ pub fn global_savedata_path() -> PathBuf {
         .join("rfvp_global.bin")
 }
 
+/// Global savedata path inside an explicit save directory (host-runtime save root).
+#[cfg(not(feature = "no_std"))]
+pub fn global_savedata_path_in(save_dir: &std::path::Path) -> PathBuf {
+    save_dir.join("rfvp_global.bin")
+}
+
 #[cfg(feature = "no_std")]
 pub fn save_global_savedata_v1(_game_data: &GameData) -> Result<()> {
     bail!("GlobalSaveDataV1 host persistence is not wired to the no_std file-system adapter")
@@ -151,6 +157,12 @@ pub fn save_global_savedata_v1(_game_data: &GameData) -> Result<()> {
 
 #[cfg(not(feature = "no_std"))]
 pub fn save_global_savedata_v1(game_data: &GameData) -> Result<()> {
+    save_global_savedata_v1_to(game_data, &global_savedata_path())
+}
+
+/// Write `rfvp_global.bin` to an explicit path (host-runtime save root).
+#[cfg(not(feature = "no_std"))]
+pub fn save_global_savedata_v1_to(game_data: &GameData, path: &std::path::Path) -> Result<()> {
     let snap = GlobalSaveDataV1::capture(game_data);
     let payload = bincode_opts()
         .serialize(&snap)
@@ -174,12 +186,11 @@ pub fn save_global_savedata_v1(game_data: &GameData) -> Result<()> {
     out.extend_from_slice(&len_u32.to_le_bytes());
     out.extend_from_slice(&GLOBAL_SAVE_MAGIC);
 
-    let path = global_savedata_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(&parent)
+        std::fs::create_dir_all(parent)
             .with_context(|| format!("create_dir_all {}", parent.display()))?;
     }
-    std::fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(path, &out).with_context(|| format!("write {}", path.display()))?;
 
     Ok(())
 }
@@ -191,12 +202,20 @@ pub fn try_load_global_savedata_v1(_game_data: &mut GameData) -> Result<bool> {
 
 #[cfg(not(feature = "no_std"))]
 pub fn try_load_global_savedata_v1(game_data: &mut GameData) -> Result<bool> {
-    let path = global_savedata_path();
+    try_load_global_savedata_v1_from(game_data, &global_savedata_path())
+}
+
+/// Load `rfvp_global.bin` from an explicit path (host-runtime save root).
+#[cfg(not(feature = "no_std"))]
+pub fn try_load_global_savedata_v1_from(
+    game_data: &mut GameData,
+    path: &std::path::Path,
+) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
 
-    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let Some(snap) = try_decode_global_savedata_v1(&bytes)? else {
         return Ok(false);
     };

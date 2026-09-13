@@ -122,6 +122,9 @@ pub struct RfvpCore {
     hit_proxies: HitProxyTable,
     last_error: Option<RfvpError>,
     last_error_detail: Option<String>,
+    /// Directory where save slots (`rfvp_sNNN.bin`) and `rfvp_global.bin` live.
+    /// Set by windowless hosts before `boot`; `None` keeps the engine default.
+    save_dir: Option<std::path::PathBuf>,
 }
 
 impl RfvpCore {
@@ -141,6 +144,7 @@ impl RfvpCore {
             hit_proxies: HitProxyTable::default(),
             last_error: None,
             last_error_detail: None,
+            save_dir: None,
         }
     }
 
@@ -175,6 +179,23 @@ impl RfvpCore {
 
     pub fn last_error_detail(&self) -> Option<&str> {
         self.last_error_detail.as_deref()
+    }
+
+    /// Set the directory used for save slots and global savedata.
+    ///
+    /// Call before `boot` so the boot-time global savedata load and the save
+    /// manager both use it. Windowless hosts pass their ABI save root here;
+    /// when unset the engine falls back to its default (`app_base_path()/save`).
+    pub fn set_save_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.save_dir = dir;
+        #[cfg(not(feature = "no_std"))]
+        if let Some(dir) = &self.save_dir {
+            self.game_data.save_manager.set_save_dir(Some(dir.clone()));
+        }
+    }
+
+    pub fn save_dir(&self) -> Option<&std::path::PathBuf> {
+        self.save_dir.as_ref()
     }
 
     pub fn push_event(&mut self, event: RfvpEvent) -> RfvpResult<()> {
@@ -341,6 +362,28 @@ impl RfvpCore {
         self.game_data = game_data;
         self.vm_runner = Some(vm_runner);
         self.parser = Some(parser);
+
+        // Apply the host-provided save directory and load persistent global savedata
+        // (flags, read-text bitmap, volatile globals) the way the windowed app does.
+        #[cfg(not(feature = "no_std"))]
+        if let Some(dir) = self.save_dir.clone() {
+            self.game_data.save_manager.set_save_dir(Some(dir.clone()));
+            let global_path = crate::subsystem::global_savedata::global_savedata_path_in(&dir);
+            match crate::subsystem::global_savedata::try_load_global_savedata_v1_from(
+                &mut self.game_data,
+                &global_path,
+            ) {
+                Ok(true) => host.log(
+                    RfvpLogLevel::Info,
+                    &format!("loaded global savedata from {}", global_path.display()),
+                ),
+                Ok(false) => {}
+                Err(err) => host.log(
+                    RfvpLogLevel::Warn,
+                    &format!("failed to load global savedata: {err:?}"),
+                ),
+            }
+        }
         Ok(())
     }
 
@@ -419,6 +462,13 @@ impl RfvpCore {
 
             self.flush_audio(host)?;
             self.render_game_frame(host)?;
+
+            // Service save writes the windowed app would have handled during its
+            // render pass (thumbnail readback + finalize + rfvp_global.bin flush
+            // trigger). The host runtime is windowless, so the thumbnail is a
+            // zeroed RGBA buffer of the requested size.
+            #[cfg(not(feature = "no_std"))]
+            self.service_save_requests(host);
         } else if self.run_state == RfvpCoreRunState::BootFailed {
             return Err(self.last_error.unwrap_or(RfvpError::InvalidData));
         }
@@ -450,28 +500,169 @@ impl RfvpCore {
         Ok(())
     }
 
+    /// Persist `rfvp_global.bin` to the configured save directory.
+    ///
+    /// The windowed app does this from `App::drop`; windowless hosts call this
+    /// when the runtime exits or is destroyed.
+    #[cfg(not(feature = "no_std"))]
+    pub fn flush_global_savedata(&mut self) {
+        let Some(dir) = self.save_dir.clone() else {
+            return;
+        };
+        let path = crate::subsystem::global_savedata::global_savedata_path_in(&dir);
+        if let Err(err) = crate::subsystem::global_savedata::save_global_savedata_v1_to(
+            &self.game_data,
+            &path,
+        ) {
+            log::error!("failed to save global savedata to {}: {err:?}", path.display());
+        }
+    }
+
+    /// Drive the save-write pipeline for one tick.
+    ///
+    /// Mirrors the app.rs frame loop: first commit a pending SaveWrite from an
+    /// already-prepared in-memory payload (`local_saved`), then finalize any
+    /// pending capture. Without this, `savedata_requested` would stay set and the
+    /// VM runner would re-capture a snapshot every tick forever.
+    #[cfg(not(feature = "no_std"))]
+    fn service_save_requests<H: RfvpHost>(&mut self, host: &mut H) {
+        // Phase 1: commit a SaveWrite that can reuse a prepared in-memory payload
+        // (SaveCreate(3, nil/int) + SaveWrite(slot) two-phase flow).
+        {
+            let nls = self.game_data.get_nls();
+            match self.game_data.save_manager.try_commit_local_savedata(nls) {
+                Ok(true) => self.game_data.save_manager.consume_save_write_result(),
+                Ok(false) => {}
+                Err(err) => {
+                    host.log(
+                        RfvpLogLevel::Error,
+                        &format!("save: try_commit_local_savedata failed: {err:?}"),
+                    );
+                    self.game_data.save_manager.clear_pending_save_requests();
+                }
+            }
+        }
+
+        // Phase 2: a capture-backed finalize is pending. There is no GPU readback
+        // in the windowless host, so persist a zeroed thumbnail of the requested
+        // size (the in-memory host save manager did the same).
+        let Some((slot, thumb_w, thumb_h)) = self.game_data.save_manager.pending_save_capture()
+        else {
+            return;
+        };
+        let nls = self.game_data.get_nls();
+        let state_snap =
+            crate::subsystem::save_state::SaveStateSnapshotV1::capture(&mut self.game_data);
+        let thumb_len = (thumb_w as usize)
+            .saturating_mul(thumb_h as usize)
+            .saturating_mul(4);
+        let thumb = vec![0u8; thumb_len];
+
+        let result = if slot == u32::MAX {
+            // SaveCreate(3, nil/int): prepare local_saved, then commit if a
+            // SaveWrite was already bound to a slot.
+            self.game_data
+                .save_manager
+                .finalize_local_savedata_prepare(
+                    nls.clone(),
+                    thumb_w,
+                    thumb_h,
+                    &thumb,
+                    Some(&state_snap),
+                )
+                .and_then(|_| self.game_data.save_manager.try_commit_local_savedata(nls))
+        } else {
+            self.game_data
+                .save_manager
+                .finalize_save_write(nls, thumb_w, thumb_h, &thumb, Some(&state_snap))
+                .map(|_| true)
+        };
+
+        match result {
+            Ok(committed) => {
+                if committed {
+                    self.game_data.save_manager.consume_save_write_result();
+                }
+            }
+            Err(err) => {
+                host.log(
+                    RfvpLogLevel::Error,
+                    &format!("save: finalize failed for slot {slot}: {err:?}"),
+                );
+                self.game_data.save_manager.clear_pending_save_requests();
+            }
+        }
+    }
+
     fn apply_pending_events_to_game_data(&mut self) {
+        use crate::subsystem::resources::input_manager::KeyCode as EngineKey;
+
+        fn engine_key(key: crate::host_api::KeyCode) -> Option<EngineKey> {
+            match key {
+                crate::host_api::KeyCode::Escape => Some(EngineKey::Esc),
+                crate::host_api::KeyCode::Return => Some(EngineKey::Enter),
+                crate::host_api::KeyCode::Space => Some(EngineKey::Space),
+                crate::host_api::KeyCode::Left => Some(EngineKey::LeftArrow),
+                crate::host_api::KeyCode::Right => Some(EngineKey::RightArrow),
+                crate::host_api::KeyCode::Up => Some(EngineKey::UpArrow),
+                crate::host_api::KeyCode::Down => Some(EngineKey::DownArrow),
+                crate::host_api::KeyCode::Tab => Some(EngineKey::Tab),
+                crate::host_api::KeyCode::Shift => Some(EngineKey::Shift),
+                crate::host_api::KeyCode::Control => Some(EngineKey::Ctrl),
+                crate::host_api::KeyCode::Function(n) => match n {
+                    1 => Some(EngineKey::F1),
+                    2 => Some(EngineKey::F2),
+                    3 => Some(EngineKey::F3),
+                    4 => Some(EngineKey::F4),
+                    5 => Some(EngineKey::F5),
+                    6 => Some(EngineKey::F6),
+                    7 => Some(EngineKey::F7),
+                    8 => Some(EngineKey::F8),
+                    9 => Some(EngineKey::F9),
+                    10 => Some(EngineKey::F10),
+                    11 => Some(EngineKey::F11),
+                    12 => Some(EngineKey::F12),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+
+        fn engine_button(button: crate::host_api::PointerButton) -> Option<EngineKey> {
+            match button {
+                crate::host_api::PointerButton::Left => Some(EngineKey::MouseLeft),
+                crate::host_api::PointerButton::Right => Some(EngineKey::MouseRight),
+                _ => None,
+            }
+        }
+
         for event in &self.pending_events {
             match *event {
+                RfvpEvent::KeyDown { key, repeat, .. } => {
+                    if let Some(keycode) = engine_key(key) {
+                        self.game_data
+                            .inputs_manager
+                            .notify_keycode_down(keycode, repeat);
+                    }
+                }
+                RfvpEvent::KeyUp { key, .. } => {
+                    if let Some(keycode) = engine_key(key) {
+                        self.game_data.inputs_manager.notify_keycode_up(keycode);
+                    }
+                }
                 RfvpEvent::PointerMove { x, y, in_screen } => {
                     self.game_data.inputs_manager.notify_mouse_move(x, y);
                     self.game_data.inputs_manager.set_mouse_in(in_screen);
                 }
-                RfvpEvent::PointerDown {
-                    button: crate::host_api::PointerButton::Left,
-                    ..
-                } => {
-                    self.game_data.inputs_manager.notify_mouse_down(
-                        crate::subsystem::resources::input_manager::KeyCode::MouseLeft,
-                    );
+                RfvpEvent::PointerDown { button, .. } => {
+                    if let Some(keycode) = engine_button(button) {
+                        self.game_data.inputs_manager.notify_mouse_down(keycode);
+                    }
                 }
-                RfvpEvent::PointerUp {
-                    button: crate::host_api::PointerButton::Left,
-                    ..
-                } => {
-                    self.game_data.inputs_manager.notify_mouse_up(
-                        crate::subsystem::resources::input_manager::KeyCode::MouseLeft,
-                    );
+                RfvpEvent::PointerUp { button, .. } => {
+                    if let Some(keycode) = engine_button(button) {
+                        self.game_data.inputs_manager.notify_mouse_up(keycode);
+                    }
                 }
                 RfvpEvent::Wheel { delta_y, .. } => {
                     self.game_data.inputs_manager.notify_mouse_wheel(delta_y);

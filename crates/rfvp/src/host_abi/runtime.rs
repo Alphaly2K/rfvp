@@ -1430,9 +1430,13 @@ pub unsafe extern "C" fn rfvp_runtime_create(
             let Some(resources) = state.resources.get(Handle::from_raw(config.resources)) else {
                 return None;
             };
-            Some((resources.game_root.clone(), resources.nls))
+            Some((
+                resources.game_root.clone(),
+                resources.save_root.clone(),
+                resources.nls,
+            ))
         });
-        let Some((game_root, nls)) = resources else {
+        let Some((game_root, save_root, nls)) = resources else {
             return RFVP_STATUS_INVALID_HANDLE;
         };
 
@@ -1440,7 +1444,14 @@ pub unsafe extern "C" fn rfvp_runtime_create(
             return RFVP_STATUS_INVALID_DATA;
         };
 
+        // Effective save directory: the ABI-provided save root if set, else
+        // `<game_root>/save`. Saves persist as real rfvp_sNNN.bin files there.
+        let save_dir = save_root
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(&game_root).join("save"));
+
         let mut core = RfvpCore::new(RfvpCoreConfig::default());
+        core.set_save_dir(Some(save_dir));
         let mut host = HostPlatform::new(&game_root);
         let boot = RfvpBootConfig {
             asset_root: &game_root,
@@ -1478,7 +1489,11 @@ pub unsafe extern "C" fn rfvp_runtime_create(
 pub unsafe extern "C" fn rfvp_runtime_destroy(runtime: u64) {
     guard_void(|| {
         with_state(|state| {
-            state.runtimes.remove(Handle::from_raw(runtime));
+            if let Some(mut runtime) = state.runtimes.remove(Handle::from_raw(runtime)) {
+                // The windowed app persists rfvp_global.bin from App::drop; mirror
+                // that here so flags/read-text survive host-runtime sessions.
+                runtime.core.flush_global_savedata();
+            }
         });
     });
 }
@@ -1494,6 +1509,10 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
             if let Err(error) = runtime.core.tick(&mut runtime.host) {
                 log::error!("rfvp_runtime_step failed: {error:?}");
                 return RFVP_STATUS_ENGINE;
+            }
+            if runtime.core.exit_requested() && !runtime.exit_requested {
+                // Exit edge: persist global savedata like the windowed app's Drop does.
+                runtime.core.flush_global_savedata();
             }
             runtime.exit_requested |= runtime.core.exit_requested();
             let mut audio_commands = Vec::new();

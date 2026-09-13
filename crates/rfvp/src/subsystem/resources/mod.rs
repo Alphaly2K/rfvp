@@ -15,9 +15,9 @@ pub mod input_manager;
 pub mod motion_manager;
 pub mod parts_manager;
 pub mod prim;
-#[cfg(not(any(feature = "no_std", feature = "host-runtime")))]
+#[cfg(not(feature = "no_std"))]
 pub mod save_manager;
-#[cfg(any(feature = "no_std", feature = "host-runtime"))]
+#[cfg(feature = "no_std")]
 #[path = "save_manager_host.rs"]
 pub mod save_manager;
 pub mod text_manager;

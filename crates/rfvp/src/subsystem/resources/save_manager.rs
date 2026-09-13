@@ -9,10 +9,20 @@ use alloc::{
 use anyhow::{bail, Result};
 use chrono::{Datelike, Local, Timelike};
 use std::mem::size_of;
-use std::{io::Read, path::Path};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use crate::subsystem::resources::thread_manager::ThreadManagerSnapshotV1;
 use crate::{script::parser::Nls, utils::file::app_base_path};
+
+/// Default save directory: `<app base>/save` (process-global, see `app_base_path`).
+///
+/// Host-runtime runtimes override this per instance via `SaveManager::set_save_dir`.
+pub fn default_save_dir() -> PathBuf {
+    app_base_path().get_path().join("save")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveDataFunction {
@@ -70,35 +80,36 @@ pub struct SaveItem {
 }
 
 impl SaveItem {
+    /// Save file path for `slot` inside an explicit save directory.
+    ///
+    /// rfvp save files use "rfvp_s%03d.bin"; read path remains compatible with original/legacy names.
+    pub fn get_save_path_in(save_dir: &Path, slot: u32) -> std::path::PathBuf {
+        save_dir.join(format!("rfvp_s{:03}.bin", slot))
+    }
+
     pub fn get_save_path(slot: u32) -> std::path::PathBuf {
-        // rfvp save files use "rfvp_s%03d.bin"; read path remains compatible with original/legacy names.
-        app_base_path()
-            .get_path()
-            .join("save")
-            .join(format!("rfvp_s{:03}.bin", slot))
+        Self::get_save_path_in(&default_save_dir(), slot)
     }
 
-    fn legacy_save_path(slot: u32) -> std::path::PathBuf {
+    fn legacy_save_path_in(save_dir: &Path, slot: u32) -> std::path::PathBuf {
         // Legacy rfvp builds used "s{slot}.bin".
-        app_base_path()
-            .get_path()
-            .join("save")
-            .join(format!("s{}.bin", slot))
+        save_dir.join(format!("s{}.bin", slot))
     }
 
-    pub fn resolve_save_path_for_read(slot: u32) -> std::path::PathBuf {
-        let p = Self::get_save_path(slot);
+    pub fn resolve_save_path_for_read_in(save_dir: &Path, slot: u32) -> std::path::PathBuf {
+        let p = Self::get_save_path_in(save_dir, slot);
         if p.exists() {
             return p;
         }
-        let legacy_padded = app_base_path()
-            .get_path()
-            .join("save")
-            .join(format!("s{:03}.bin", slot));
+        let legacy_padded = save_dir.join(format!("s{:03}.bin", slot));
         if legacy_padded.exists() {
             return legacy_padded;
         }
-        Self::legacy_save_path(slot)
+        Self::legacy_save_path_in(save_dir, slot)
+    }
+
+    pub fn resolve_save_path_for_read(slot: u32) -> std::path::PathBuf {
+        Self::resolve_save_path_for_read_in(&default_save_dir(), slot)
     }
 
     fn decode_bytes(nls: Nls, bytes: &[u8]) -> String {
@@ -228,7 +239,8 @@ impl SaveItem {
         })
     }
 
-    pub fn read_thumb_texture_from_file(
+    pub fn read_thumb_texture_from_file_in(
+        save_dir: &Path,
         slot: u32,
         width: u32,
         height: u32,
@@ -251,7 +263,7 @@ impl SaveItem {
             Ok(())
         }
 
-        let path = Self::resolve_save_path_for_read(slot);
+        let path = Self::resolve_save_path_for_read_in(save_dir, slot);
         let file = std::fs::File::open(path)?;
         let mut r = std::io::BufReader::new(file);
 
@@ -318,7 +330,7 @@ impl SaveItem {
     }
 
     pub fn read_thumb_texture(slot: u32, width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
-        Self::read_thumb_texture_from_file(slot, width, height)
+        Self::read_thumb_texture_from_file_in(&default_save_dir(), slot, width, height)
     }
 }
 
@@ -340,6 +352,9 @@ pub struct SaveManager {
     need_save_prepare: bool,
     /// Prepared save bytes (header + thumbnail + optional RFVS chunk) for SaveWrite.
     local_saved_bytes: Option<Box<[u8]>>,
+    /// Per-instance save directory override. `None` falls back to the process-global
+    /// `app_base_path()/save` (see `default_save_dir`).
+    save_dir: Option<PathBuf>,
 }
 
 impl Default for SaveManager {
@@ -366,7 +381,31 @@ impl SaveManager {
             pending_vm_snapshot: None,
             need_save_prepare: false,
             local_saved_bytes: None,
+            save_dir: None,
         }
+    }
+
+    /// Override the directory used for save slot files (`rfvp_sNNN.bin`).
+    ///
+    /// Windowless host runtimes call this with the ABI-provided save root so each
+    /// runtime persists to its own directory instead of the process-global base path.
+    pub fn set_save_dir(&mut self, dir: Option<PathBuf>) {
+        self.save_dir = dir;
+    }
+
+    /// Effective save directory: the override if set, else `app_base_path()/save`.
+    pub fn save_dir(&self) -> PathBuf {
+        self.save_dir.clone().unwrap_or_else(default_save_dir)
+    }
+
+    /// Write path for a save slot inside the effective save directory.
+    pub fn get_save_path(&self, slot: u32) -> PathBuf {
+        SaveItem::get_save_path_in(&self.save_dir(), slot)
+    }
+
+    /// Read path for a save slot, probing legacy names inside the effective save directory.
+    pub fn resolve_save_path_for_read(&self, slot: u32) -> PathBuf {
+        SaveItem::resolve_save_path_for_read_in(&self.save_dir(), slot)
     }
 
     pub fn set_thumb_size(&mut self, width: u32, height: u32) {
@@ -484,7 +523,7 @@ impl SaveManager {
         }
         #[cfg(not(target_os = "uefi"))]
         {
-            SaveItem::get_save_path(slot).exists()
+            self.get_save_path(slot).exists()
         }
     }
 
@@ -604,7 +643,7 @@ impl SaveManager {
         }
 
         #[cfg(not(target_os = "uefi"))]
-        SaveItem::read_thumb_texture(slot, width, height)
+        SaveItem::read_thumb_texture_from_file_in(&self.save_dir(), slot, width, height)
     }
 
     pub fn delete_savedata(&mut self, slot: u32) {
@@ -618,7 +657,7 @@ impl SaveManager {
         }
         #[cfg(not(target_os = "uefi"))]
         {
-            let path = SaveItem::resolve_save_path_for_read(slot);
+            let path = self.resolve_save_path_for_read(slot);
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -635,9 +674,9 @@ impl SaveManager {
             if let Some(save_item) = self.slots.get(src as usize) {
                 if let Some(save_item) = save_item {
                     self.slots[dst as usize] = Some(save_item.clone());
-                    let src_data = SaveItem::resolve_save_path_for_read(src);
+                    let src_data = self.resolve_save_path_for_read(src);
 
-                    let dst_data = SaveItem::get_save_path(dst);
+                    let dst_data = self.get_save_path(dst);
 
                     let _ = std::fs::copy(src_data, dst_data)?;
                 }
@@ -664,7 +703,7 @@ impl SaveManager {
                 *slot = None;
             }
 
-            let dir = app_base_path().get_path().join("save");
+            let dir = self.save_dir();
             if !dir.exists() {
                 return Ok(());
             }
@@ -693,10 +732,18 @@ impl SaveManager {
                     Some(s) => s,
                     None => continue,
                 };
-                if !fname.starts_with('s') || !fname.ends_with(".bin") {
+                // Accept the engine's own "rfvp_sNNN.bin" as well as legacy "sNNN.bin"/"sN.bin".
+                let stem = match fname.strip_suffix(".bin") {
+                    Some(stem) => stem,
+                    None => continue,
+                };
+                let num = if let Some(num) = stem.strip_prefix("rfvp_s") {
+                    num
+                } else if let Some(num) = stem.strip_prefix('s') {
+                    num
+                } else {
                     continue;
-                }
-                let num = &fname[1..fname.len().saturating_sub(4)];
+                };
                 let slot_id: u32 = match num.parse() {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -731,7 +778,7 @@ impl SaveManager {
 
         #[cfg(not(target_os = "uefi"))]
         {
-            let path = SaveItem::resolve_save_path_for_read(slot);
+            let path = self.resolve_save_path_for_read(slot);
 
             // Missing save slots are not fatal for callers that enumerate all slots.
             if !path.exists() {
@@ -857,7 +904,7 @@ impl SaveManager {
                 return Ok(false);
             };
 
-            let path = SaveItem::get_save_path(self.current_save_slot);
+            let path = self.get_save_path(self.current_save_slot);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -916,7 +963,7 @@ impl SaveManager {
             if let Some(snap) = state {
                 crate::subsystem::save_state::append_state_chunk_v1(&mut bytes, snap)?;
             }
-            let path = SaveItem::get_save_path(self.current_save_slot);
+            let path = self.get_save_path(self.current_save_slot);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -936,6 +983,17 @@ impl SaveManager {
 
     /// Called by the SaveWrite syscall once it has observed completion.
     pub fn consume_save_write_result(&mut self) {
+        self.save_requested = false;
+        self.savedata_prepared = false;
+        self.current_save_slot = u32::MAX;
+    }
+
+    /// Abort any pending save prepare/write requests without writing.
+    ///
+    /// Used by hosts that cannot complete a requested capture (e.g. on error) so
+    /// `wants_vm_snapshot_capture` does not stay latched forever.
+    pub fn clear_pending_save_requests(&mut self) {
+        self.need_save_prepare = false;
         self.save_requested = false;
         self.savedata_prepared = false;
         self.current_save_slot = u32::MAX;
@@ -974,7 +1032,7 @@ impl SaveManager {
 
         #[cfg(not(target_os = "uefi"))]
         {
-            let path = SaveItem::resolve_save_path_for_read(slot);
+            let path = self.resolve_save_path_for_read(slot);
             let bytes = std::fs::read(&path)?;
             self.load_slot_into_current_from_bytes(slot, nls, &bytes)
         }
@@ -1109,5 +1167,70 @@ mod tests {
 
         let save_item = SaveItem::load_from_file(filepath, Nls::ShiftJIS).unwrap();
         log::debug!("{:?}", save_item);
+    }
+
+    fn temp_save_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rfvp_save_test_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    #[cfg(not(target_os = "uefi"))]
+    fn save_dir_override_roundtrip_and_legacy_scan() {
+        let dir = temp_save_dir("roundtrip");
+
+        // Write a slot through the same path the host-runtime core uses:
+        // request -> pending_save_capture -> finalize_save_write -> consume.
+        let mut sm = SaveManager::new();
+        sm.set_save_dir(Some(dir.clone()));
+        sm.set_current_title("タイトル".to_string());
+        sm.set_current_scene_title("scene-1".to_string());
+        sm.set_current_script_content("script-body".to_string());
+        sm.asynchronously_save(7);
+        assert!(sm.wants_vm_snapshot_capture());
+
+        let (slot, w, h) = sm.pending_save_capture().expect("capture must be pending");
+        assert_eq!(slot, 7);
+        let thumb = vec![0u8; (w as usize) * (h as usize) * 4];
+        sm.finalize_save_write(Nls::UTF8, w, h, &thumb, None).unwrap();
+        sm.consume_save_write_result();
+        assert!(!sm.wants_vm_snapshot_capture());
+
+        let path = dir.join("rfvp_s007.bin");
+        assert!(path.exists(), "expected save file at {}", path.display());
+
+        // A fresh manager over the same directory must enumerate the slot and
+        // resolve it for reads (this is what the LOAD menu relies on).
+        let mut sm2 = SaveManager::new();
+        sm2.set_save_dir(Some(dir.clone()));
+        sm2.refresh_all_savedata(Nls::UTF8).unwrap();
+        assert!(sm2.test_save_slot(7));
+        assert_eq!(sm2.get_save_title(7), "タイトル");
+        assert_eq!(sm2.get_save_scene_title(7), "scene-1");
+        assert_eq!(sm2.get_script_content(7), "script-body");
+        assert_eq!(
+            sm2.resolve_save_path_for_read(7),
+            path,
+            "read path must resolve to rfvp_sNNN.bin"
+        );
+        assert_eq!(sm2.get_save_thumb(7, w, h).unwrap().len(), thumb.len());
+
+        // Loading the slot must populate the current fields.
+        sm2.load_slot_into_current(7, Nls::UTF8).unwrap();
+        assert_eq!(sm2.get_current_title(), "タイトル");
+        assert_eq!(sm2.get_current_scene_title(), "scene-1");
+
+        // Legacy filenames must enumerate too (both "sNNN.bin" and "sN.bin").
+        std::fs::copy(&path, dir.join("s008.bin")).unwrap();
+        std::fs::copy(&path, dir.join("s9.bin")).unwrap();
+        let mut sm3 = SaveManager::new();
+        sm3.set_save_dir(Some(dir.clone()));
+        sm3.refresh_all_savedata(Nls::UTF8).unwrap();
+        assert!(sm3.test_save_slot(7), "rfvp_s007.bin must be enumerated");
+        assert!(sm3.test_save_slot(8), "legacy s008.bin must be enumerated");
+        assert!(sm3.test_save_slot(9), "legacy s9.bin must be enumerated");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

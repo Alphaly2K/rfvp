@@ -5,7 +5,6 @@ use std::fs;
 #[cfg(not(feature = "no_std"))]
 use crate::debug_ui;
 use crate::script::{context::ThreadState, parser::Parser};
-use crate::subsystem::resources::save_manager::SaveItem;
 use crate::subsystem::resources::{
     motion_manager::DissolveType, thread_manager::ThreadManager, thread_wrapper::ThreadRequest,
 };
@@ -101,7 +100,7 @@ impl VmRunner {
             }
             #[cfg(not(feature = "no_std"))]
             {
-                let path = SaveItem::resolve_save_path_for_read(slot);
+                let path = game.save_manager.resolve_save_path_for_read(slot);
                 match fs::read(&path) {
                     Ok(bytes) => {
                         let nls = game.get_nls();
