@@ -284,7 +284,6 @@ pub fn build_sysdesc(meta: &Meta, entry_point: u32) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::opcode;

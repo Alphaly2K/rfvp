@@ -38,26 +38,26 @@ const KNOWN_AC97: &[(u16, u16)] = &[
 ];
 
 // NABM register offsets relative to NABM base, for the PCM-Out (PO) channel.
-const PO_BDBAR:  u16 = 0x10; // Buffer Descriptor List Base Address (32-bit)
-const PO_CIV:   u16 = 0x14; // Current Index Value (8-bit, read-only)
-const PO_LVI:   u16 = 0x15; // Last Valid Index (8-bit, write to advance)
-const PO_SR:    u16 = 0x16; // Status Register (16-bit)
-const PO_CR:    u16 = 0x1B; // Control Register (8-bit)
+const PO_BDBAR: u16 = 0x10; // Buffer Descriptor List Base Address (32-bit)
+const PO_CIV: u16 = 0x14; // Current Index Value (8-bit, read-only)
+const PO_LVI: u16 = 0x15; // Last Valid Index (8-bit, write to advance)
+const PO_SR: u16 = 0x16; // Status Register (16-bit)
+const PO_CR: u16 = 0x1B; // Control Register (8-bit)
 
 const NABM_GLOB_CNT: u16 = 0x2C; // Global Control Register (32-bit)
 const NABM_GLOB_STS: u16 = 0x30; // Global Status Register (32-bit)
 
 // PCM-Out Control Register bits
-const CR_RPBM:  u8 = 0x01; // Run/Pause Bus Master
-const CR_RR:    u8 = 0x02; // Reset Registers
+const CR_RPBM: u8 = 0x01; // Run/Pause Bus Master
+const CR_RR: u8 = 0x02; // Reset Registers
 const CR_LVBIE: u8 = 0x04; // Last Valid Buffer Interrupt Enable
-const CR_FEIE:  u8 = 0x08; // FIFO Error Interrupt Enable
-const CR_IOCE:  u8 = 0x10; // Interrupt On Completion Enable
+const CR_FEIE: u8 = 0x08; // FIFO Error Interrupt Enable
+const CR_IOCE: u8 = 0x10; // Interrupt On Completion Enable
 
 // NAM register offsets
 const NAM_MASTER_VOL: u16 = 0x02;
-const NAM_PCM_VOL:    u16 = 0x18;
-const NAM_PCM_RATE:   u16 = 0x2C; // PCM Front DAC Rate
+const NAM_PCM_VOL: u16 = 0x18;
+const NAM_PCM_RATE: u16 = 0x2C; // PCM Front DAC Rate
 
 // BDL ring size (hardware fixed at 32).
 const BDL_SIZE: usize = 32;
@@ -141,7 +141,9 @@ unsafe fn find_ac97() -> Option<(u8, u8, u8)> {
                 let id = pci_read32(bus, dev, func, 0x00);
                 if id == 0xFFFF_FFFF {
                     // No device; if func==0, no multi-function either.
-                    if func == 0 { break; }
+                    if func == 0 {
+                        break;
+                    }
                     continue;
                 }
                 let vendor = (id & 0xFFFF) as u16;
@@ -177,9 +179,9 @@ unsafe fn find_ac97() -> Option<(u8, u8, u8)> {
 
 #[repr(C, packed)]
 struct BdlEntry {
-    addr: u32,   // Physical address of the buffer
+    addr: u32,    // Physical address of the buffer
     samples: u16, // Number of 16-bit samples in the buffer
-    flags: u16,  // Bit 15: interrupt on completion, bit 14: last buffer
+    flags: u16,   // Bit 15: interrupt on completion, bit 14: last buffer
 }
 
 // ─── AC97 driver ─────────────────────────────────────────────────────────────
@@ -208,7 +210,7 @@ pub struct Ac97Driver {
 /// Total: 32×8 + 32×BUF_BYTES bytes = 256 + 131072 = 131328 bytes ≈ 33 pages.
 #[repr(C, align(4096))]
 struct DmaRegion {
-    bdl:  [BdlEntry; BDL_SIZE],
+    bdl: [BdlEntry; BDL_SIZE],
     bufs: [[u8; BUF_BYTES]; BDL_SIZE],
 }
 
@@ -223,17 +225,28 @@ impl Ac97Driver {
             civ: 0,
         };
         // SAFETY: All PCI and I/O port operations are unsafe by nature.
-        unsafe { drv.try_init(); }
+        unsafe {
+            drv.try_init();
+        }
         drv
     }
 
     unsafe fn try_init(&mut self) {
-        let Some((bus, dev, func)) = find_ac97() else { return };
+        let Some((bus, dev, func)) = find_ac97() else {
+            return;
+        };
 
         let id = pci_read32(bus, dev, func, 0x00);
         let vendor = (id & 0xFFFF) as u16;
         let device = ((id >> 16) & 0xFFFF) as u16;
-        log::info!("anzu-hal AC97: found PCI {:04x}:{:04x} at {:02x}:{:02x}.{}", vendor, device, bus, dev, func);
+        log::info!(
+            "anzu-hal AC97: found PCI {:04x}:{:04x} at {:02x}:{:02x}.{}",
+            vendor,
+            device,
+            bus,
+            dev,
+            func
+        );
 
         // Enable bus mastering and I/O space.
         let cmd = pci_read16(bus, dev, func, 0x04);
@@ -249,21 +262,30 @@ impl Ac97Driver {
             return;
         }
 
-        self.nam_base  = (bar0 & 0xFFFC) as u16;
+        self.nam_base = (bar0 & 0xFFFC) as u16;
         self.nabm_base = (bar1 & 0xFFF0) as u16;
-        log::info!("anzu-hal AC97: NAM=0x{:04x} NABM=0x{:04x}", self.nam_base, self.nabm_base);
+        log::info!(
+            "anzu-hal AC97: NAM=0x{:04x} NABM=0x{:04x}",
+            self.nam_base,
+            self.nabm_base
+        );
 
         // Cold reset the codec via Global Control register.
         outl(self.nabm_base + NABM_GLOB_CNT, 0x0000_0002); // GIE=0, COLD_RST=1
-        // Give codec 100 µs to settle (busy-poll since we have no sleep).
-        for _ in 0..1_000_000u64 { core::hint::spin_loop(); }
+                                                           // Give codec 100 µs to settle (busy-poll since we have no sleep).
+        for _ in 0..1_000_000u64 {
+            core::hint::spin_loop();
+        }
         outl(self.nabm_base + NABM_GLOB_CNT, 0x0000_0000); // Clear reset
 
         // Wait for codec ready (bit 8 of Global Status = PCM out codec ready).
         let mut ready = false;
         for _ in 0..2_000_000u64 {
             let sts = inl(self.nabm_base + NABM_GLOB_STS);
-            if sts & 0x0100 != 0 { ready = true; break; }
+            if sts & 0x0100 != 0 {
+                ready = true;
+                break;
+            }
             core::hint::spin_loop();
         }
         if !ready {
@@ -293,14 +315,20 @@ impl Ac97Driver {
 
         // Allocate DMA region.  Box<DmaRegion> is page-aligned (see #[repr(C, align(4096))]).
         let mut region = Box::new(DmaRegion {
-            bdl: core::array::from_fn(|_| BdlEntry { addr: 0, samples: 0, flags: 0 }),
+            bdl: core::array::from_fn(|_| BdlEntry {
+                addr: 0,
+                samples: 0,
+                flags: 0,
+            }),
             bufs: [[0u8; BUF_BYTES]; BDL_SIZE],
         });
 
         // Physical address of the DMA region = virtual address under UEFI identity map.
         let region_phys = region.as_ref() as *const DmaRegion as u64;
-        assert!(region_phys + core::mem::size_of::<DmaRegion>() as u64 <= 0xFFFF_FFFF,
-            "anzu-hal AC97: DMA region above 4 GiB limit");
+        assert!(
+            region_phys + core::mem::size_of::<DmaRegion>() as u64 <= 0xFFFF_FFFF,
+            "anzu-hal AC97: DMA region above 4 GiB limit"
+        );
 
         let buf_base_phys = region_phys + core::mem::offset_of!(DmaRegion, bufs) as u64;
 
@@ -309,9 +337,9 @@ impl Ac97Driver {
             let buf_phys = (buf_base_phys + (i * BUF_BYTES) as u64) as u32;
             // AC97 BDL sample count = number of 16-bit samples (L+R interleaved).
             // BUF_BYTES bytes / 2 = BUF_FRAMES * 2 samples.
-            region.bdl[i].addr    = buf_phys;
+            region.bdl[i].addr = buf_phys;
             region.bdl[i].samples = (BUF_BYTES / 2) as u16;
-            region.bdl[i].flags   = 0; // No interrupts; hardware cycles automatically.
+            region.bdl[i].flags = 0; // No interrupts; hardware cycles automatically.
         }
 
         // Give NABM the BDL physical address.
@@ -320,7 +348,9 @@ impl Ac97Driver {
 
         // Reset the PCM-out channel registers.
         outb(self.nabm_base + PO_CR, CR_RR);
-        for _ in 0..1_000_000u64 { core::hint::spin_loop(); }
+        for _ in 0..1_000_000u64 {
+            core::hint::spin_loop();
+        }
 
         self.dma_mem = Some(region);
         self.lvi = (BDL_SIZE as u8) - 1;
@@ -333,7 +363,11 @@ impl Ac97Driver {
         outb(self.nabm_base + PO_CR, CR_RPBM);
 
         self.available = true;
-        log::info!("anzu-hal AC97: DMA started, {} buffers × {} frames", BDL_SIZE, BUF_FRAMES);
+        log::info!(
+            "anzu-hal AC97: DMA started, {} buffers × {} frames",
+            BDL_SIZE,
+            BUF_FRAMES
+        );
     }
 
     /// Read the current hardware index (CIV) and how many buffers are "consumed"
@@ -363,17 +397,23 @@ impl AudioDriver for Ac97Driver {
     }
 
     fn frames_available(&self) -> usize {
-        if !self.available { return 0; }
+        if !self.available {
+            return 0;
+        }
         let consumed = unsafe { self.consumed_since(self.lvi) } as usize;
         consumed * BUF_FRAMES
     }
 
     fn write_frames(&mut self, buf: &[i16], n_frames: usize) {
-        if !self.available || n_frames == 0 { return; }
+        if !self.available || n_frames == 0 {
+            return;
+        }
 
         // Copy fields we need before taking &mut self.dma_mem (avoids borrow conflict).
         let nabm_base = self.nabm_base;
-        let Some(region) = self.dma_mem.as_mut() else { return };
+        let Some(region) = self.dma_mem.as_mut() else {
+            return;
+        };
 
         let mut remaining = n_frames.min(buf.len() / 2);
         let mut src_offset = 0usize;
@@ -387,7 +427,9 @@ impl AudioDriver for Ac97Driver {
             } else {
                 (civ as usize + BDL_SIZE - next) % BDL_SIZE
             };
-            if consumed == 0 { break; }
+            if consumed == 0 {
+                break;
+            }
 
             let refill_idx = next;
             let frames_to_fill = remaining.min(BUF_FRAMES);
@@ -399,7 +441,7 @@ impl AudioDriver for Ac97Driver {
                 let li = i * 4;
                 let lb = l.to_le_bytes();
                 let rb = r.to_le_bytes();
-                dst[li]     = lb[0];
+                dst[li] = lb[0];
                 dst[li + 1] = lb[1];
                 dst[li + 2] = rb[0];
                 dst[li + 3] = rb[1];
@@ -409,7 +451,9 @@ impl AudioDriver for Ac97Driver {
             }
 
             self.lvi = refill_idx as u8;
-            unsafe { outb(nabm_base + PO_LVI, self.lvi); }
+            unsafe {
+                outb(nabm_base + PO_LVI, self.lvi);
+            }
 
             src_offset += frames_to_fill * 2;
             remaining -= frames_to_fill;

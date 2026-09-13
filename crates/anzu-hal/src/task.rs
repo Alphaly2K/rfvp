@@ -55,14 +55,18 @@ pub struct PanTask {
 
 impl PanTask {
     fn t(&self) -> f32 {
-        if self.total_ms == 0 { 1.0 } else {
+        if self.total_ms == 0 {
+            1.0
+        } else {
             (self.elapsed_ms as f32 / self.total_ms as f32).clamp(0.0, 1.0)
         }
     }
     fn current_pan(&self) -> f32 {
         self.from_pan + (self.to_pan - self.from_pan) * self.t()
     }
-    fn is_done(&self) -> bool { self.elapsed_ms >= self.total_ms }
+    fn is_done(&self) -> bool {
+        self.elapsed_ms >= self.total_ms
+    }
 }
 
 /// Delayed-stop: stop a channel after `delay_ms` milliseconds.
@@ -74,7 +78,9 @@ pub struct StopTask {
 }
 
 impl StopTask {
-    fn is_done(&self) -> bool { self.elapsed_ms >= self.delay_ms }
+    fn is_done(&self) -> bool {
+        self.elapsed_ms >= self.delay_ms
+    }
 }
 
 #[derive(Default)]

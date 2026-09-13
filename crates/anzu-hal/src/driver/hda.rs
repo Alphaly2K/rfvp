@@ -16,8 +16,8 @@
 //! * aarch64: PCIe ECAM MMIO at a base found from ACPI MCFG.  Call
 //!   `set_ecam_base()` before `HdaDriver::new()`.
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use super::AudioDriver;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ─── ECAM base (aarch64 only) ─────────────────────────────────────────────────
 
@@ -101,7 +101,13 @@ mod pcicfg {
     pub unsafe fn write16(bus: u8, dev: u8, func: u8, reg: u16, val: u16) {
         let shift = ((reg & 2) * 8) as u32;
         let old = read32(bus, dev, func, reg & !3);
-        write32(bus, dev, func, reg & !3, (old & !(0xFFFF << shift)) | ((val as u32) << shift));
+        write32(
+            bus,
+            dev,
+            func,
+            reg & !3,
+            (old & !(0xFFFF << shift)) | ((val as u32) << shift),
+        );
     }
 }
 
@@ -112,7 +118,9 @@ mod pcicfg {
 
     unsafe fn ecam_ptr(bus: u8, dev: u8, func: u8, reg: u16) -> Option<*mut u32> {
         let base = ECAM_BASE.load(Ordering::Relaxed);
-        if base == 0 { return None; }
+        if base == 0 {
+            return None;
+        }
         let addr = base
             | ((bus as u64) << 20)
             | ((dev as u64) << 15)
@@ -127,7 +135,9 @@ mod pcicfg {
             .unwrap_or(0xFFFF_FFFF)
     }
     pub unsafe fn write32(bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
-        if let Some(p) = ecam_ptr(bus, dev, func, reg) { p.write_volatile(val); }
+        if let Some(p) = ecam_ptr(bus, dev, func, reg) {
+            p.write_volatile(val);
+        }
     }
     pub unsafe fn read16(bus: u8, dev: u8, func: u8, reg: u16) -> u16 {
         let v = read32(bus, dev, func, reg & !3);
@@ -136,48 +146,54 @@ mod pcicfg {
     pub unsafe fn write16(bus: u8, dev: u8, func: u8, reg: u16, val: u16) {
         let shift = ((reg & 2) * 8) as u32;
         let old = read32(bus, dev, func, reg & !3);
-        write32(bus, dev, func, reg & !3, (old & !(0xFFFF << shift)) | ((val as u32) << shift));
+        write32(
+            bus,
+            dev,
+            func,
+            reg & !3,
+            (old & !(0xFFFF << shift)) | ((val as u32) << shift),
+        );
     }
 }
 
 // ─── HDA register offsets ─────────────────────────────────────────────────────
 
-const GCAP:      u32 = 0x00;
-const GCTL:      u32 = 0x08;
-const STATESTS:  u32 = 0x0E;
+const GCAP: u32 = 0x00;
+const GCTL: u32 = 0x08;
+const STATESTS: u32 = 0x0E;
 const CORBLBASE: u32 = 0x40;
 const CORBUBASE: u32 = 0x44;
-const CORBWP:    u32 = 0x48;
-const CORBRP:    u32 = 0x4A;
-const CORBCTL:   u32 = 0x4C;
-const CORBSIZE:  u32 = 0x4E;
+const CORBWP: u32 = 0x48;
+const CORBRP: u32 = 0x4A;
+const CORBCTL: u32 = 0x4C;
+const CORBSIZE: u32 = 0x4E;
 const RIRBLBASE: u32 = 0x50;
 const RIRBUBASE: u32 = 0x54;
-const RIRBWP:    u32 = 0x58;
-const RINTCNT:   u32 = 0x5A;
-const RIRBCTL:   u32 = 0x5C;
-const RIRBSIZE:  u32 = 0x5E;
+const RIRBWP: u32 = 0x58;
+const RINTCNT: u32 = 0x5A;
+const RIRBCTL: u32 = 0x5C;
+const RIRBSIZE: u32 = 0x5E;
 
 // Output Stream Descriptor register offsets relative to OSD base
-const SD_CTL:   u32 = 0x00; // 8-bit
-const SD_STS:   u32 = 0x03; // 8-bit
-const SD_LPIB:  u32 = 0x04; // 32-bit
-const SD_CBL:   u32 = 0x08; // 32-bit (cyclic buffer length in bytes)
-const SD_LVI:   u32 = 0x0C; // 16-bit (last valid BDL index)
-const SD_FMT:   u32 = 0x12; // 16-bit
+const SD_CTL: u32 = 0x00; // 8-bit
+const SD_STS: u32 = 0x03; // 8-bit
+const SD_LPIB: u32 = 0x04; // 32-bit
+const SD_CBL: u32 = 0x08; // 32-bit (cyclic buffer length in bytes)
+const SD_LVI: u32 = 0x0C; // 16-bit (last valid BDL index)
+const SD_FMT: u32 = 0x12; // 16-bit
 const SD_BDLPL: u32 = 0x18; // 32-bit
 const SD_BDLPU: u32 = 0x1C; // 32-bit
 
 // HDA verb constants
-const VRB_GET_PARAM:       u32 = 0xF0000;
-const VRB_SET_PWRSTATE:    u32 = 0x70500;
+const VRB_GET_PARAM: u32 = 0xF0000;
+const VRB_SET_PWRSTATE: u32 = 0x70500;
 const VRB_SET_CONVERTER_FMT: u32 = 0x20000;
 const VRB_SET_CONVERTER_STREAM: u32 = 0x70600;
-const VRB_SET_AMP_GAIN:    u32 = 0x30000;
-const VRB_SET_PIN_CTRL:    u32 = 0x70700;
+const VRB_SET_AMP_GAIN: u32 = 0x30000;
+const VRB_SET_PIN_CTRL: u32 = 0x70700;
 
-const PARAM_NODE_COUNT:    u32 = 0x04;
-const PARAM_WIDGET_CAP:    u32 = 0x09;
+const PARAM_NODE_COUNT: u32 = 0x04;
+const PARAM_WIDGET_CAP: u32 = 0x09;
 
 // HDA PCM format: 48 kHz, 16-bit, stereo
 // bits[14:11]=0 (48 kHz base), bits[10:8]=0 (÷1), bits[7:4]=1 (16-bit), bits[3:0]=1 (2ch)
@@ -185,8 +201,8 @@ const FMT_48K_16B_STEREO: u16 = 0x0011;
 
 // DMA ring
 const BDL_ENTRIES: usize = 4;
-const BUF_FRAMES:  usize = 1024;
-const BUF_BYTES:   usize = BUF_FRAMES * 4; // 4 bytes per stereo frame
+const BUF_FRAMES: usize = 1024;
+const BUF_BYTES: usize = BUF_FRAMES * 4; // 4 bytes per stereo frame
 
 // ─── DMA region ───────────────────────────────────────────────────────────────
 
@@ -194,26 +210,26 @@ const BUF_BYTES:   usize = BUF_FRAMES * 4; // 4 bytes per stereo frame
 struct BdlEntry {
     addr_lo: u32,
     addr_hi: u32,
-    len:     u32,
-    ioc:     u32,
+    len: u32,
+    ioc: u32,
 }
 
 #[repr(C, align(4096))]
 struct HdaRegion {
-    corb: [u32; 256],               //  1024 bytes, 128-byte aligned at offset 0
-    _pad0: [u8; 128],               //   pad to keep rirb 128-aligned (1024+128=1152 → 1152%128=0 ✓)
-    rirb: [u64; 256],               //  2048 bytes at offset 1152
-    _pad1: [u8; 32],                //   pad: 1152+2048=3200, next 128-boundary = 3200 ✓
-    bdl:  [BdlEntry; BDL_ENTRIES],  //    64 bytes at offset 3200 (128-aligned ✓)
-    _pad2: [u8; 64],                //   pad to 128-align bufs: 3200+64+64=3328 ✓
+    corb: [u32; 256],                     //  1024 bytes, 128-byte aligned at offset 0
+    _pad0: [u8; 128], //   pad to keep rirb 128-aligned (1024+128=1152 → 1152%128=0 ✓)
+    rirb: [u64; 256], //  2048 bytes at offset 1152
+    _pad1: [u8; 32],  //   pad: 1152+2048=3200, next 128-boundary = 3200 ✓
+    bdl: [BdlEntry; BDL_ENTRIES], //    64 bytes at offset 3200 (128-aligned ✓)
+    _pad2: [u8; 64],  //   pad to 128-align bufs: 3200+64+64=3328 ✓
     bufs: [[u8; BUF_BYTES]; BDL_ENTRIES], // 16384 bytes
 }
 
 // ─── CORB/RIRB ───────────────────────────────────────────────────────────────
 
 struct Corb {
-    bar0:    u64,
-    wp:      u16,
+    bar0: u64,
+    wp: u16,
     rirb_wp: u16,
 }
 
@@ -241,8 +257,14 @@ impl Corb {
     }
 
     /// Build and send an HDA verb: addr·nid·verb(12-bit)·payload(8-bit)
-    unsafe fn verb(&mut self, region: &mut HdaRegion,
-                   caddr: u8, nid: u8, verb: u32, payload: u16) -> u32 {
+    unsafe fn verb(
+        &mut self,
+        region: &mut HdaRegion,
+        caddr: u8,
+        nid: u8,
+        verb: u32,
+        payload: u16,
+    ) -> u32 {
         let word = ((caddr as u32) << 28)
             | ((nid as u32) << 20)
             | (verb & 0xFF_FF0)
@@ -259,7 +281,9 @@ unsafe fn find_hda() -> Option<(u8, u8, u8)> {
             for func in 0u8..8 {
                 let id = pcicfg::read32(bus, dev, func, 0x00);
                 if id == 0xFFFF_FFFF {
-                    if func == 0 { break; }
+                    if func == 0 {
+                        break;
+                    }
                     continue;
                 }
                 // PCI class: 0x04 multimedia; subclass 0x03 = HDA
@@ -272,13 +296,16 @@ unsafe fn find_hda() -> Option<(u8, u8, u8)> {
                 let vendor = id & 0xFFFF;
                 let device = id >> 16;
                 if (vendor == 0x8086 && (device == 0x2668 || device == 0x293E))
-                    || (vendor == 0x1B36 && device == 0x000D)  // QEMU generic HDA
+                    || (vendor == 0x1B36 && device == 0x000D)
+                // QEMU generic HDA
                 {
                     return Some((bus, dev, func));
                 }
                 if func == 0 {
                     let hdr = (pcicfg::read32(bus, dev, 0, 0x0C) >> 16) as u8;
-                    if (hdr & 0x80) == 0 { break; }
+                    if (hdr & 0x80) == 0 {
+                        break;
+                    }
                 }
             }
         }
@@ -289,11 +316,11 @@ unsafe fn find_hda() -> Option<(u8, u8, u8)> {
 // ─── HDA driver ───────────────────────────────────────────────────────────────
 
 pub struct HdaDriver {
-    available:  bool,
-    bar0:       u64,         // MMIO base of HDA controller
-    osd_base:   u32,         // register offset of first output stream descriptor
-    region:     Option<Box<HdaRegion>>,
-    write_buf:  usize,       // next BDL buffer index to fill
+    available: bool,
+    bar0: u64,     // MMIO base of HDA controller
+    osd_base: u32, // register offset of first output stream descriptor
+    region: Option<Box<HdaRegion>>,
+    write_buf: usize, // next BDL buffer index to fill
 }
 
 impl HdaDriver {
@@ -305,17 +332,28 @@ impl HdaDriver {
             region: None,
             write_buf: 0,
         };
-        unsafe { drv.try_init(); }
+        unsafe {
+            drv.try_init();
+        }
         drv
     }
 
     unsafe fn try_init(&mut self) {
-        let Some((bus, dev, func)) = find_hda() else { return };
+        let Some((bus, dev, func)) = find_hda() else {
+            return;
+        };
 
         let id = pcicfg::read32(bus, dev, func, 0x00);
         let vid = id & 0xFFFF;
         let did = id >> 16;
-        log::info!("anzu-hal HDA: found PCI {:04x}:{:04x} at {:02x}:{:02x}.{}", vid, did, bus, dev, func);
+        log::info!(
+            "anzu-hal HDA: found PCI {:04x}:{:04x} at {:02x}:{:02x}.{}",
+            vid,
+            did,
+            bus,
+            dev,
+            func
+        );
 
         // Enable bus master + memory space
         let cmd = pcicfg::read16(bus, dev, func, 0x04);
@@ -341,15 +379,21 @@ impl HdaDriver {
 
         // Global reset
         wr32(bar0, GCTL, 0);
-        for _ in 0..100_000u32 { core::hint::spin_loop(); }
+        for _ in 0..100_000u32 {
+            core::hint::spin_loop();
+        }
         wr32(bar0, GCTL, 1);
         for _ in 0..2_000_000u32 {
-            if rd32(bar0, GCTL) & 1 != 0 { break; }
+            if rd32(bar0, GCTL) & 1 != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
         // Wait for codec ready
         for _ in 0..2_000_000u32 {
-            if rd16(bar0, STATESTS) != 0 { break; }
+            if rd16(bar0, STATESTS) != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 
@@ -362,17 +406,27 @@ impl HdaDriver {
             return;
         }
         self.osd_base = 0x80 + iss * 0x20;
-        log::info!("anzu-hal HDA: ISS={} OSS={} OSD_BASE=0x{:x}", iss, oss, self.osd_base);
+        log::info!(
+            "anzu-hal HDA: ISS={} OSS={} OSD_BASE=0x{:x}",
+            iss,
+            oss,
+            self.osd_base
+        );
 
         // Allocate DMA region
         let mut region = Box::new(HdaRegion {
-            corb:  [0u32; 256],
-            _pad0: [0u8;  128],
-            rirb:  [0u64; 256],
-            _pad1: [0u8;   32],
-            bdl:   [(); BDL_ENTRIES].map(|_| BdlEntry { addr_lo: 0, addr_hi: 0, len: 0, ioc: 0 }),
-            _pad2: [0u8;   64],
-            bufs:  [[0u8; BUF_BYTES]; BDL_ENTRIES],
+            corb: [0u32; 256],
+            _pad0: [0u8; 128],
+            rirb: [0u64; 256],
+            _pad1: [0u8; 32],
+            bdl: [(); BDL_ENTRIES].map(|_| BdlEntry {
+                addr_lo: 0,
+                addr_hi: 0,
+                len: 0,
+                ioc: 0,
+            }),
+            _pad2: [0u8; 64],
+            bufs: [[0u8; BUF_BYTES]; BDL_ENTRIES],
         });
 
         let phys_base = region.as_ref() as *const HdaRegion as u64;
@@ -382,12 +436,14 @@ impl HdaDriver {
         let corb_phys = phys_base + core::mem::offset_of!(HdaRegion, corb) as u64;
         wr32(bar0, CORBLBASE, corb_phys as u32);
         wr32(bar0, CORBUBASE, (corb_phys >> 32) as u32);
-        wr8(bar0, CORBSIZE, 0x02);  // 256 entries
-        // Reset CORBWP and CORBRP
+        wr8(bar0, CORBSIZE, 0x02); // 256 entries
+                                   // Reset CORBWP and CORBRP
         wr16(bar0, CORBWP, 0);
         wr16(bar0, CORBRP, 0x8000); // set reset bit
         for _ in 0..100_000u32 {
-            if rd16(bar0, CORBRP) & 0x8000 != 0 { break; }
+            if rd16(bar0, CORBRP) & 0x8000 != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
         wr16(bar0, CORBRP, 0); // clear reset
@@ -400,12 +456,16 @@ impl HdaDriver {
             + 128; // _pad0
         wr32(bar0, RIRBLBASE, rirb_phys as u32);
         wr32(bar0, RIRBUBASE, (rirb_phys >> 32) as u32);
-        wr8(bar0, RIRBSIZE, 0x02);  // 256 entries
+        wr8(bar0, RIRBSIZE, 0x02); // 256 entries
         wr16(bar0, RIRBWP, 0x8000); // reset write pointer
         wr16(bar0, RINTCNT, 1);
         wr8(bar0, RIRBCTL, 0x02); // DMA run
 
-        let mut corb = Corb { bar0, wp: 0, rirb_wp: 0 };
+        let mut corb = Corb {
+            bar0,
+            wp: 0,
+            rirb_wp: 0,
+        };
 
         // ── Codec enumeration ─────────────────────────────────────────────
         // Find first codec (bit set in STATESTS)
@@ -421,10 +481,20 @@ impl HdaDriver {
         log::info!("anzu-hal HDA: codec at address {}", caddr);
 
         // Root node: GET_PARAM(SUBORDINATE_NODE_COUNT) → find AFG
-        let root_nodes = corb.verb(&mut region, caddr, 0, VRB_GET_PARAM, PARAM_NODE_COUNT as u16);
+        let root_nodes = corb.verb(
+            &mut region,
+            caddr,
+            0,
+            VRB_GET_PARAM,
+            PARAM_NODE_COUNT as u16,
+        );
         let afg_start = ((root_nodes >> 16) & 0xFF) as u8;
         let afg_count = (root_nodes & 0xFF) as u8;
-        log::info!("anzu-hal HDA: root node: {} function groups starting at {}", afg_count, afg_start);
+        log::info!(
+            "anzu-hal HDA: root node: {} function groups starting at {}",
+            afg_count,
+            afg_start
+        );
 
         // Find Audio Function Group (type 0x01)
         let mut afg_nid: Option<u8> = None;
@@ -448,7 +518,13 @@ impl HdaDriver {
         corb.verb(&mut region, caddr, afg_nid, VRB_SET_PWRSTATE, 0x00);
 
         // Enumerate AFG widgets: find first output converter and output pin
-        let widget_nodes = corb.verb(&mut region, caddr, afg_nid, VRB_GET_PARAM, PARAM_NODE_COUNT as u16);
+        let widget_nodes = corb.verb(
+            &mut region,
+            caddr,
+            afg_nid,
+            VRB_GET_PARAM,
+            PARAM_NODE_COUNT as u16,
+        );
         let wgt_start = ((widget_nodes >> 16) & 0xFF) as u8;
         let wgt_count = (widget_nodes & 0xFF) as u8;
 
@@ -456,14 +532,22 @@ impl HdaDriver {
         let mut pin_nid: Option<u8> = None;
 
         for n in wgt_start..(wgt_start + wgt_count) {
-            let cap = corb.verb(&mut region, caddr, n, VRB_GET_PARAM, PARAM_WIDGET_CAP as u16);
+            let cap = corb.verb(
+                &mut region,
+                caddr,
+                n,
+                VRB_GET_PARAM,
+                PARAM_WIDGET_CAP as u16,
+            );
             let wtype = (cap >> 20) & 0xF;
             match wtype {
-                0x0 if dac_nid.is_none() => { // Audio Out
+                0x0 if dac_nid.is_none() => {
+                    // Audio Out
                     dac_nid = Some(n);
                     log::info!("anzu-hal HDA: DAC at NID {}", n);
                 }
-                0x4 => { // Pin widget
+                0x4 => {
+                    // Pin widget
                     // Check pin default config (0xF1C) to find a physical output pin
                     // connectivity bits [31:30]: 00=no conn, 01=jack, 10=no jack, 11=fixed
                     let def_cfg = corb.verb(&mut region, caddr, n, 0xF1C00, 0);
@@ -492,14 +576,20 @@ impl HdaDriver {
         // Set DAC stream/channel: stream 1, channel 0
         corb.verb(&mut region, caddr, dac_nid, VRB_SET_CONVERTER_STREAM, 0x10);
         // Set DAC format: 48 kHz, 16-bit, stereo
-        corb.verb(&mut region, caddr, dac_nid, VRB_SET_CONVERTER_FMT, FMT_48K_16B_STEREO);
+        corb.verb(
+            &mut region,
+            caddr,
+            dac_nid,
+            VRB_SET_CONVERTER_FMT,
+            FMT_48K_16B_STEREO,
+        );
         // Unmute DAC output amplifier (set=output, L+R, gain=0, mute=0)
         corb.verb(&mut region, caddr, dac_nid, VRB_SET_AMP_GAIN, 0xB000);
 
         if let Some(pin) = pin_nid {
             // Enable output on pin widget
             corb.verb(&mut region, caddr, pin, VRB_SET_PIN_CTRL, 0x40); // EPD=1
-            // Unmute pin amplifier
+                                                                        // Unmute pin amplifier
             corb.verb(&mut region, caddr, pin, VRB_SET_AMP_GAIN, 0xB000);
         }
 
@@ -509,9 +599,13 @@ impl HdaDriver {
 
         // Stop stream, reset
         wr8(bar0, osd + SD_CTL, 0x00);
-        for _ in 0..50_000u32 { core::hint::spin_loop(); }
+        for _ in 0..50_000u32 {
+            core::hint::spin_loop();
+        }
         wr8(bar0, osd + SD_CTL, 0x01); // Stream Reset
-        for _ in 0..50_000u32 { core::hint::spin_loop(); }
+        for _ in 0..50_000u32 {
+            core::hint::spin_loop();
+        }
         wr8(bar0, osd + SD_CTL, 0x00); // Clear reset
 
         // Populate BDL
@@ -542,7 +636,11 @@ impl HdaDriver {
         self.write_buf = 1; // start filling from buffer 1 (HW starts at 0)
         self.available = true;
 
-        log::info!("anzu-hal HDA: DMA started, {} buffers × {} frames each", BDL_ENTRIES, BUF_FRAMES);
+        log::info!(
+            "anzu-hal HDA: DMA started, {} buffers × {} frames each",
+            BDL_ENTRIES,
+            BUF_FRAMES
+        );
     }
 
     unsafe fn lpib(&self) -> u64 {
@@ -557,10 +655,14 @@ impl HdaDriver {
 }
 
 impl AudioDriver for HdaDriver {
-    fn is_available(&self) -> bool { self.available }
+    fn is_available(&self) -> bool {
+        self.available
+    }
 
     fn frames_available(&self) -> usize {
-        if !self.available { return 0; }
+        if !self.available {
+            return 0;
+        }
         let playing = self.playing_buf();
         // Number of buffers ahead of playing that we haven't written to yet
         // write_buf is where we'll write next; playing_buf is where HW is now
@@ -569,10 +671,15 @@ impl AudioDriver for HdaDriver {
     }
 
     fn write_frames(&mut self, buf: &[i16], n_frames: usize) {
-        if !self.available || n_frames == 0 { return; }
+        if !self.available || n_frames == 0 {
+            return;
+        }
         // Read playing_buf before taking &mut self.region (avoids borrow conflict).
         let playing = self.playing_buf();
-        let region = match self.region.as_mut() { Some(r) => r, None => return };
+        let region = match self.region.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
         let mut remaining = n_frames.min(buf.len() / 2);
         let mut src = 0usize;
 
@@ -584,7 +691,7 @@ impl AudioDriver for HdaDriver {
                 let r = buf[src + i * 2 + 1];
                 let lb = l.to_le_bytes();
                 let rb = r.to_le_bytes();
-                dst[i * 4]     = lb[0];
+                dst[i * 4] = lb[0];
                 dst[i * 4 + 1] = lb[1];
                 dst[i * 4 + 2] = rb[0];
                 dst[i * 4 + 3] = rb[1];

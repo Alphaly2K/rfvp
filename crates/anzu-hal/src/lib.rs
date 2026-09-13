@@ -52,12 +52,20 @@ pub struct Tween {
 impl Tween {
     pub const IMMEDIATE: Tween = Tween { duration_ms: 0 };
 
-    pub fn ms(ms: u32) -> Self { Self { duration_ms: ms } }
-    pub fn secs(s: f64) -> Self { Self { duration_ms: (s * 1000.0) as u32 } }
+    pub fn ms(ms: u32) -> Self {
+        Self { duration_ms: ms }
+    }
+    pub fn secs(s: f64) -> Self {
+        Self {
+            duration_ms: (s * 1000.0) as u32,
+        }
+    }
 }
 
 impl Default for Tween {
-    fn default() -> Self { Self::IMMEDIATE }
+    fn default() -> Self {
+        Self::IMMEDIATE
+    }
 }
 
 // ─── Region (loop points) ─────────────────────────────────────────────────────
@@ -73,7 +81,12 @@ pub struct Region {
 
 impl Region {
     /// Loop the entire sound.
-    pub fn full() -> Self { Self { start: 0, end: None } }
+    pub fn full() -> Self {
+        Self {
+            start: 0,
+            end: None,
+        }
+    }
 }
 
 // ─── Panning ─────────────────────────────────────────────────────────────────
@@ -91,7 +104,9 @@ impl Panning {
 }
 
 impl From<f32> for Panning {
-    fn from(v: f32) -> Self { Panning(v.clamp(0.0, 1.0)) }
+    fn from(v: f32) -> Self {
+        Panning(v.clamp(0.0, 1.0))
+    }
 }
 
 // ─── SoundData ───────────────────────────────────────────────────────────────
@@ -127,7 +142,9 @@ impl SoundData {
         self.pcm.samples.len() as u64 / 2
     }
 
-    pub fn sample_rate(&self) -> u32 { self.pcm.sample_rate }
+    pub fn sample_rate(&self) -> u32 {
+        self.pcm.sample_rate
+    }
 }
 
 // ─── SoundState ──────────────────────────────────────────────────────────────
@@ -140,7 +157,9 @@ pub enum SoundState {
 
 impl SoundState {
     /// Returns true when the sound is still advancing (matches kira's API).
-    pub fn is_advancing(self) -> bool { self == SoundState::Playing }
+    pub fn is_advancing(self) -> bool {
+        self == SoundState::Playing
+    }
 }
 
 // ─── SoundHandle ─────────────────────────────────────────────────────────────
@@ -156,7 +175,9 @@ pub struct SoundHandle {
 
 impl SoundHandle {
     fn with<F: FnOnce(&mut AudioSystemInner)>(&self, f: F) {
-        if let Ok(mut g) = self.system.lock() { f(&mut g); }
+        if let Ok(mut g) = self.system.lock() {
+            f(&mut g);
+        }
     }
 
     /// Immediately stop the channel, or fade out over `tween.duration_ms`.
@@ -227,10 +248,16 @@ impl SoundHandle {
 
     /// Query playback state.
     pub fn state(&self) -> SoundState {
-        let active = self.system.lock()
+        let active = self
+            .system
+            .lock()
             .map(|g| g.mixer.is_channel_active(self.channel))
             .unwrap_or(false);
-        if active { SoundState::Playing } else { SoundState::Stopped }
+        if active {
+            SoundState::Playing
+        } else {
+            SoundState::Stopped
+        }
     }
 }
 
@@ -248,7 +275,9 @@ impl TrackHandle {
 /// Builder for sub-tracks (kira::track::TrackBuilder-compatible stub).
 pub struct TrackBuilder;
 impl TrackBuilder {
-    pub fn new() -> Self { TrackBuilder }
+    pub fn new() -> Self {
+        TrackBuilder
+    }
 }
 
 // ─── Internal audio system ────────────────────────────────────────────────────
@@ -277,7 +306,14 @@ impl AudioSystemInner {
         let loop_start = loop_region.map(|r| r.start).unwrap_or(0);
 
         let start_vol = if fade_in.duration_ms > 0 { 0.0 } else { volume };
-        let ch = self.mixer.play(samples, data.pcm.sample_rate, start_vol, pan, looping, loop_start)?;
+        let ch = self.mixer.play(
+            samples,
+            data.pcm.sample_rate,
+            start_vol,
+            pan,
+            looping,
+            loop_start,
+        )?;
 
         if fade_in.duration_ms > 0 {
             self.tasks.schedule_fade(FadeTask {
@@ -297,7 +333,9 @@ impl AudioSystemInner {
         self.tasks.tick(delta_ms, &mut self.mixer);
 
         let avail = self.driver.frames_available();
-        if avail == 0 { return; }
+        if avail == 0 {
+            return;
+        }
 
         // Grow the reusable buffer if needed (never shrinks — that's intentional).
         let needed = avail * 2;
@@ -330,16 +368,23 @@ impl AudioSystem {
             master_volume: 1.0,
             mix_buf: Vec::new(),
         };
-        Self { inner: Arc::new(Mutex::new(inner)) }
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+        }
     }
 
     pub fn is_audio_available(&self) -> bool {
-        self.inner.lock().map(|g| g.driver.is_available()).unwrap_or(false)
+        self.inner
+            .lock()
+            .map(|g| g.driver.is_available())
+            .unwrap_or(false)
     }
 
     /// Advance all fade tasks and push audio to hardware.  Call once per frame.
     pub fn tick(&self, delta_ms: u32) {
-        if let Ok(mut g) = self.inner.lock() { g.tick(delta_ms); }
+        if let Ok(mut g) = self.inner.lock() {
+            g.tick(delta_ms);
+        }
     }
 
     pub fn set_master_volume(&self, vol: f32) {
@@ -362,7 +407,10 @@ impl AudioSystem {
     ) -> Option<SoundHandle> {
         let mut g = self.inner.lock().ok()?;
         let ch = g.play_sound(data, volume, pan, looping, loop_region, fade_in)?;
-        Some(SoundHandle { channel: ch, system: Arc::clone(&self.inner) })
+        Some(SoundHandle {
+            channel: ch,
+            system: Arc::clone(&self.inner),
+        })
     }
 
     /// Create a dummy sub-track (kira-compat; does not affect audio routing).

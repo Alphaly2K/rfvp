@@ -1,8 +1,8 @@
 //! Public library API.
 
-use std::collections::HashMap;
 #[cfg(target_os = "uefi")]
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 #[cfg(target_os = "uefi")]
 use std::hash::BuildHasherDefault;
 use std::io::{Read, Seek, SeekFrom};

@@ -106,9 +106,9 @@ impl SoftMixer {
 
     /// Allocate the next free channel slot. Returns `None` if all channels are in use.
     fn alloc_channel(&mut self) -> Option<usize> {
-        self.channels.iter().position(|c| {
-            c.as_ref().map(|ch| !ch.active).unwrap_or(true)
-        })
+        self.channels
+            .iter()
+            .position(|c| c.as_ref().map(|ch| !ch.active).unwrap_or(true))
     }
 
     /// Start playing `samples` (Arc<Vec<i16>>, stereo 16-bit) on a new channel.
@@ -165,11 +165,19 @@ impl SoftMixer {
     }
 
     pub fn channel_volume(&self, id: usize) -> f32 {
-        self.channels.get(id).and_then(|c| c.as_ref()).map(|c| c.volume).unwrap_or(0.0)
+        self.channels
+            .get(id)
+            .and_then(|c| c.as_ref())
+            .map(|c| c.volume)
+            .unwrap_or(0.0)
     }
 
     pub fn channel_pan(&self, id: usize) -> f32 {
-        self.channels.get(id).and_then(|c| c.as_ref()).map(|c| c.pan).unwrap_or(0.5)
+        self.channels
+            .get(id)
+            .and_then(|c| c.as_ref())
+            .map(|c| c.pan)
+            .unwrap_or(0.5)
     }
 
     pub fn set_master_volume(&mut self, vol: f32) {
@@ -196,7 +204,9 @@ impl SoftMixer {
             let gain_r = vol * pan.sqrt();
 
             for frame in 0..n {
-                let Some((sl, sr)) = ch.next_sample() else { break };
+                let Some((sl, sr)) = ch.next_sample() else {
+                    break;
+                };
                 let l = (sl as f32 * gain_l) as i32;
                 let r = (sr as f32 * gain_r) as i32;
                 let oi = frame * 2;
@@ -205,5 +215,4 @@ impl SoftMixer {
             }
         }
     }
-
 }
