@@ -159,6 +159,7 @@ pub const RFVP_CAPABILITY_TEXT_TRANSLATION: u64 = 1 << 8;
 pub const RFVP_CAPABILITY_NATIVE_SURFACE: u64 = 1 << 9;
 pub const RFVP_CAPABILITY_AUDIO_COMMANDS: u64 = 1 << 10;
 pub const RFVP_CAPABILITY_FONT_OVERRIDE: u64 = 1 << 11;
+pub const RFVP_CAPABILITY_TRACE_MASK: u64 = 1 << 12;
 
 pub const RFVP_TEXTURE_ID_WHITE: u32 = u32::MAX;
 
@@ -411,6 +412,7 @@ pub type RfvpFrameGetHitProxiesFn = unsafe extern "C" fn(
 pub type RfvpRuntimeSetFontOverrideFn =
     unsafe extern "C" fn(runtime: u64, data: *const u8, data_size: usize) -> i32;
 pub type RfvpRuntimeClearFontOverrideFn = unsafe extern "C" fn(runtime: u64) -> i32;
+pub type RfvpRuntimeSetTraceMaskFn = unsafe extern "C" fn(runtime: u64, mask: u32) -> i32;
 
 #[repr(C)]
 pub struct RfvpApiV1 {
@@ -457,6 +459,9 @@ pub struct RfvpApiV1 {
     // text rasterization in the windowless host).
     pub runtime_set_font_override: Option<RfvpRuntimeSetFontOverrideFn>,
     pub runtime_clear_font_override: Option<RfvpRuntimeClearFontOverrideFn>,
+    /// Overrides the `RFVP_TRACE*` env trace mask. `u32::MAX` returns to
+    /// env-var behavior. Process-wide; the runtime handle is validated.
+    pub runtime_set_trace_mask: Option<RfvpRuntimeSetTraceMaskFn>,
 }
 
 #[cfg(all(
@@ -529,6 +534,7 @@ pub(crate) static API_V1: RfvpApiV1 = RfvpApiV1 {
     runtime_clear_font_override: host_runtime_entry!(
         super::runtime::rfvp_runtime_clear_font_override
     ),
+    runtime_set_trace_mask: host_runtime_entry!(super::runtime::rfvp_runtime_set_trace_mask),
 };
 
 /// Returns the process-lifetime v1 table used by the future flat export.
@@ -592,6 +598,7 @@ mod tests {
             assert!(api.frame_release.is_some());
             assert!(api.runtime_set_font_override.is_some());
             assert!(api.runtime_clear_font_override.is_some());
+            assert!(api.runtime_set_trace_mask.is_some());
         }
         #[cfg(not(all(
             not(feature = "no_std"),

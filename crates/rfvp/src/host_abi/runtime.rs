@@ -25,6 +25,7 @@ use crate::host_abi::v1::{
     RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY, RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT,
     RFVP_CAPABILITY_AUDIO_COMMANDS, RFVP_CAPABILITY_DRAW_GLYPH, RFVP_CAPABILITY_DRAW_IMAGE,
     RFVP_CAPABILITY_EVENTS, RFVP_CAPABILITY_FONT_OVERRIDE, RFVP_CAPABILITY_HIT_PROXIES,
+    RFVP_CAPABILITY_TRACE_MASK,
     RFVP_CAPABILITY_TEXTURES, RFVP_CAPABILITY_TEXT_REPLACEMENTS, RFVP_CAPABILITY_TEXT_TRANSLATION,
     RFVP_DRAW_FLAG_HAS_CLIP, RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE,
     RFVP_EVENT_TEXT_TRANSLATION, RFVP_INPUT_FOCUS, RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN,
@@ -1764,6 +1765,21 @@ pub unsafe extern "C" fn rfvp_runtime_clear_font_override(runtime: u64) -> i32 {
     })
 }
 
+/// Overrides the engine trace mask (`RFVP_TRACE*` env vars are the default).
+/// `u32::MAX` returns to env-var behavior. The mask is process-wide; the
+/// runtime handle is only validated.
+pub unsafe extern "C" fn rfvp_runtime_set_trace_mask(runtime: u64, mask: u32) -> i32 {
+    guard_status(|| {
+        with_state(|state| {
+            if state.runtimes.get(Handle::from_raw(runtime)).is_none() {
+                return RFVP_STATUS_INVALID_HANDLE;
+            }
+            crate::trace::set_mask_override((mask != u32::MAX).then_some(mask));
+            RFVP_STATUS_OK
+        })
+    })
+}
+
 /// Installs the exact replacement table. `encoding` must be
 /// `RFVP_SERIALIZATION_JSON`; the blob is a UTF-8 JSON object mapping each
 /// source string to its replacement. An empty blob clears the table.
@@ -1956,6 +1972,7 @@ pub unsafe extern "C" fn rfvp_runtime_capabilities(runtime: u64) -> u64 {
                         | RFVP_CAPABILITY_TEXT_TRANSLATION
                         | RFVP_CAPABILITY_AUDIO_COMMANDS
                         | RFVP_CAPABILITY_FONT_OVERRIDE
+                        | RFVP_CAPABILITY_TRACE_MASK
                 })
                 .unwrap_or(0)
         })
