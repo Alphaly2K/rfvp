@@ -138,6 +138,24 @@ fn cfg() -> &'static TraceConfig {
     CFG.get_or_init(build_config)
 }
 
+/// Host-installed trace mask override, in `TraceKind` bit order
+/// (vm=1<<0, syscall=1<<1, prim=1<<2, prim_tree=1<<3, motion=1<<4,
+/// render=1<<5). `None` (the default) follows the `RFVP_TRACE*`
+/// environment variables. Hosts that cannot set process env (mobile
+/// sandboxes) use this to enable tracing programmatically.
+#[cfg(not(feature = "no_std"))]
+static MASK_OVERRIDE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Installs a trace mask override. `None` returns to env-var behavior.
+#[cfg(not(feature = "no_std"))]
+pub fn set_mask_override(mask: Option<u32>) {
+    MASK_OVERRIDE.store(
+        mask.unwrap_or(u32::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 #[cfg(feature = "no_std")]
 fn cfg() -> &'static TraceConfig {
     static CFG: TraceConfig = TraceConfig {
@@ -152,14 +170,27 @@ fn cfg() -> &'static TraceConfig {
 }
 
 pub fn enabled(k: TraceKind) -> bool {
+    #[cfg(not(feature = "no_std"))]
+    {
+        let override_mask = MASK_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if override_mask != u32::MAX {
+            return (override_mask & k.bit()) != 0;
+        }
+    }
     let c = cfg();
-    match k {
-        TraceKind::Vm => (c.mask & M_VM) != 0,
-        TraceKind::Syscall => (c.mask & M_SYSCALL) != 0,
-        TraceKind::Prim => (c.mask & M_PRIM) != 0,
-        TraceKind::PrimTree => (c.mask & M_PRIM_TREE) != 0,
-        TraceKind::Motion => (c.mask & M_MOTION) != 0,
-        TraceKind::Render => (c.mask & M_RENDER) != 0,
+    (c.mask & k.bit()) != 0
+}
+
+impl TraceKind {
+    const fn bit(self) -> u32 {
+        match self {
+            TraceKind::Vm => M_VM,
+            TraceKind::Syscall => M_SYSCALL,
+            TraceKind::Prim => M_PRIM,
+            TraceKind::PrimTree => M_PRIM_TREE,
+            TraceKind::Motion => M_MOTION,
+            TraceKind::Render => M_RENDER,
+        }
     }
 }
 
