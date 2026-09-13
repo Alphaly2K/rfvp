@@ -17,6 +17,7 @@ use crate::subsystem::resources::text_manager::FontEnumerator;
 use crate::subsystem::resources::vfs::Vfs;
 use crate::subsystem::resources::window::Window;
 use crate::subsystem::world::GameData;
+use crate::text_translation::TextTranslationRequest;
 use crate::vm_runner::VmRunner;
 #[cfg(feature = "old_school")]
 use core_maths::CoreFloat;
@@ -208,6 +209,63 @@ impl RfvpCore {
 
     pub fn clear_events(&mut self) {
         self.pending_events.clear();
+    }
+
+    /// Installs the exact host replacement table (`source -> target`) consulted
+    /// before any online translation request is queued.
+    pub fn set_text_replacements<I>(&mut self, replacements: I)
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .set_text_replacements(replacements);
+    }
+
+    pub fn set_text_hidpi_enabled(&mut self, enabled: bool) {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .set_hidpi_enabled(enabled);
+    }
+
+    pub fn set_text_translation_online_enabled(&mut self, enabled: bool) {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .set_text_translation_online_enabled(enabled);
+    }
+
+    pub fn drain_text_translation_requests(&mut self) -> Vec<TextTranslationRequest> {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .drain_text_translation_requests()
+    }
+
+    pub fn submit_text_translation(&mut self, serial: u64, translated: Option<&str>) -> bool {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .submit_text_translation(serial, translated)
+    }
+
+    pub fn pending_text_translation_count(&self) -> usize {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .pending_text_translation_count()
+    }
+
+    /// Test hook that routes a source string through the translation
+    /// controller the same way `TextManager::set_text_content` does.
+    #[cfg(test)]
+    pub(crate) fn set_text_content_for_test(&mut self, slot: i32, content: &str) {
+        self.game_data
+            .motion_manager
+            .text_manager
+            .set_text_content(slot, content);
     }
 
     pub fn boot<H: RfvpHost>(&mut self, host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpResult<()>

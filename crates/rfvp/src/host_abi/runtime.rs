@@ -14,29 +14,32 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
 
 use crate::host_abi::v1::{
-    RfvpAudioCommandV1, RfvpColorV1, RfvpDrawCommandV1, RfvpHitProxyV1, RfvpInputEventV1,
-    RfvpRectI32V1, RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1, RfvpTextureCommandV1,
-    RfvpVertexV1, RFVP_AUDIO_CREATE_STREAM, RFVP_AUDIO_DESTROY_STREAM, RFVP_AUDIO_ENCODED_FLAC,
+    RfvpAudioCommandV1, RfvpColorV1, RfvpDrawCommandV1, RfvpEventHeaderV1, RfvpHitProxyV1,
+    RfvpInputEventV1, RfvpRectI32V1, RfvpRectU16V1, RfvpResourcesConfigV1, RfvpRuntimeConfigV1,
+    RfvpTextTranslationEventV1, RfvpTextureCommandV1, RfvpVertexV1, RFVP_API_ABI_VERSION,
+    RFVP_AUDIO_CREATE_STREAM, RFVP_AUDIO_DESTROY_STREAM, RFVP_AUDIO_ENCODED_FLAC,
     RFVP_AUDIO_ENCODED_MP3, RFVP_AUDIO_ENCODED_OGG, RFVP_AUDIO_ENCODED_UNKNOWN,
     RFVP_AUDIO_ENCODED_WAV, RFVP_AUDIO_LOAD_ENCODED, RFVP_AUDIO_MASTER_VOLUME, RFVP_AUDIO_PAUSE,
     RFVP_AUDIO_PLAY, RFVP_AUDIO_RESUME, RFVP_AUDIO_SAMPLE_F32, RFVP_AUDIO_SAMPLE_I16,
     RFVP_AUDIO_SET_PARAMS, RFVP_AUDIO_STOP, RFVP_AUDIO_SUBMIT_F32, RFVP_AUDIO_SUBMIT_I16,
     RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY, RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT,
     RFVP_CAPABILITY_AUDIO_COMMANDS, RFVP_CAPABILITY_DRAW_GLYPH, RFVP_CAPABILITY_DRAW_IMAGE,
-    RFVP_CAPABILITY_HIT_PROXIES, RFVP_CAPABILITY_TEXTURES, RFVP_DRAW_FLAG_HAS_CLIP,
-    RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE, RFVP_INPUT_FOCUS,
-    RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN, RFVP_INPUT_PHASE_MOVE, RFVP_INPUT_PHASE_REPEAT,
-    RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON, RFVP_INPUT_POINTER_MOVE, RFVP_INPUT_QUIT,
-    RFVP_INPUT_TEXT, RFVP_INPUT_TOUCH, RFVP_INPUT_WHEEL, RFVP_INVALID_HANDLE, RFVP_KEY_ALT,
-    RFVP_KEY_BACKSPACE, RFVP_KEY_CONTROL, RFVP_KEY_DELETE, RFVP_KEY_DOWN, RFVP_KEY_END,
-    RFVP_KEY_ESCAPE, RFVP_KEY_HOME, RFVP_KEY_INSERT, RFVP_KEY_LEFT, RFVP_KEY_PAGE_DOWN,
-    RFVP_KEY_PAGE_UP, RFVP_KEY_RETURN, RFVP_KEY_RIGHT, RFVP_KEY_SHIFT, RFVP_KEY_SPACE,
-    RFVP_KEY_TAB, RFVP_KEY_UP, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK, RFVP_NLS_SHIFT_JIS,
-    RFVP_NLS_UTF8, RFVP_POINTER_LEFT, RFVP_POINTER_MIDDLE, RFVP_POINTER_RIGHT, RFVP_STATUS_BUSY,
-    RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT, RFVP_STATUS_INVALID_DATA,
-    RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND, RFVP_STATUS_NO_COMMAND,
-    RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RFVP_STATUS_UNSUPPORTED, RFVP_TEXTURE_CREATE,
-    RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8, RFVP_TEXTURE_FORMAT_RGBA8,
+    RFVP_CAPABILITY_EVENTS, RFVP_CAPABILITY_HIT_PROXIES, RFVP_CAPABILITY_TEXTURES,
+    RFVP_CAPABILITY_TEXT_REPLACEMENTS, RFVP_CAPABILITY_TEXT_TRANSLATION, RFVP_DRAW_FLAG_HAS_CLIP,
+    RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE, RFVP_EVENT_TEXT_TRANSLATION,
+    RFVP_INPUT_FOCUS, RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN, RFVP_INPUT_PHASE_MOVE,
+    RFVP_INPUT_PHASE_REPEAT, RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON,
+    RFVP_INPUT_POINTER_MOVE, RFVP_INPUT_QUIT, RFVP_INPUT_TEXT, RFVP_INPUT_TOUCH, RFVP_INPUT_WHEEL,
+    RFVP_INVALID_HANDLE, RFVP_KEY_ALT, RFVP_KEY_BACKSPACE, RFVP_KEY_CONTROL, RFVP_KEY_DELETE,
+    RFVP_KEY_DOWN, RFVP_KEY_END, RFVP_KEY_ESCAPE, RFVP_KEY_HOME, RFVP_KEY_INSERT, RFVP_KEY_LEFT,
+    RFVP_KEY_PAGE_DOWN, RFVP_KEY_PAGE_UP, RFVP_KEY_RETURN, RFVP_KEY_RIGHT, RFVP_KEY_SHIFT,
+    RFVP_KEY_SPACE, RFVP_KEY_TAB, RFVP_KEY_UP, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK,
+    RFVP_NLS_SHIFT_JIS, RFVP_NLS_UTF8, RFVP_POINTER_LEFT, RFVP_POINTER_MIDDLE, RFVP_POINTER_RIGHT,
+    RFVP_SERIALIZATION_JSON, RFVP_STATUS_BUSY, RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT,
+    RFVP_STATUS_INVALID_DATA, RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND,
+    RFVP_STATUS_NO_COMMAND, RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RFVP_STATUS_UNSUPPORTED,
+    RFVP_TEXTURE_CREATE, RFVP_TEXTURE_FILTER_LINEAR, RFVP_TEXTURE_FORMAT_LUMA_A8,
+    RFVP_TEXTURE_FORMAT_RGBA8,
 };
 use crate::host_abi::{Handle, HandleRegistry};
 use crate::host_api::{
@@ -55,6 +58,7 @@ use crate::rendering::external::{
 };
 use crate::rfvp_audio::AudioCommand;
 use crate::script::parser::Nls;
+use crate::text_translation::TextTranslationRequest;
 
 thread_local! {
     static HOST_STATE: RefCell<HostState> = RefCell::new(HostState::default());
@@ -80,6 +84,11 @@ struct HostRuntime {
     audio_commands: VecDeque<AudioCommand>,
     pending_audio_command: Option<PendingAudioCommand>,
     audio_queue_overflowed: bool,
+    events_enabled: bool,
+    /// Serialized event records (header + payload) in FIFO order.
+    event_queue: VecDeque<Vec<u8>>,
+    event_sequence: u64,
+    event_queue_overflowed: bool,
     width: u32,
     height: u32,
     exit_requested: bool,
@@ -97,6 +106,7 @@ struct HostFrame {
 }
 
 const MAX_PENDING_AUDIO_COMMANDS: usize = 1024;
+const MAX_PENDING_EVENTS: usize = 1024;
 
 struct PendingAudioCommand {
     command: RfvpAudioCommandV1,
@@ -1277,6 +1287,46 @@ fn input_event(event: &RfvpInputEventV1, virtual_size: (u32, u32)) -> Result<Rfv
     Ok(event)
 }
 
+/// Serializes one text translation request into a queued event record:
+/// `RfvpEventHeaderV1` (24 bytes, little-endian), `RfvpTextTranslationEventV1`,
+/// then the source and ruby UTF-8 bytes. The source/ruby offsets in the
+/// payload struct are relative to the start of the payload (the translation
+/// event struct), so `header.payload_size` covers struct + text bytes.
+fn text_translation_event_record(
+    request: &TextTranslationRequest,
+    sequence: u64,
+) -> Option<Vec<u8>> {
+    let source = request.source.as_bytes();
+    let ruby = request.ruby.as_deref().map(str::as_bytes).unwrap_or(&[]);
+    let payload_size = size_of::<RfvpTextTranslationEventV1>()
+        .checked_add(source.len())?
+        .checked_add(ruby.len())?;
+    let payload_size = u32::try_from(payload_size).ok()?;
+    let source_len = u32::try_from(source.len()).ok()?;
+    let ruby_len = u32::try_from(ruby.len()).ok()?;
+    let text_base = size_of::<RfvpTextTranslationEventV1>() as u32;
+
+    let mut record = Vec::with_capacity(size_of::<RfvpEventHeaderV1>() + payload_size as usize);
+    record.extend_from_slice(&RFVP_API_ABI_VERSION.to_le_bytes());
+    record.extend_from_slice(&RFVP_EVENT_TEXT_TRANSLATION.to_le_bytes());
+    record.extend_from_slice(&sequence.to_le_bytes());
+    record.extend_from_slice(&payload_size.to_le_bytes());
+    record.extend_from_slice(&0u32.to_le_bytes()); // aux
+    record.extend_from_slice(&(size_of::<RfvpTextTranslationEventV1>() as u32).to_le_bytes());
+    record.extend_from_slice(&RFVP_NLS_UTF8.to_le_bytes()); // encoding
+    record.extend_from_slice(&request.serial.to_le_bytes());
+    record.extend_from_slice(&request.generation.to_le_bytes());
+    record.extend_from_slice(&request.slot.to_le_bytes());
+    record.extend_from_slice(&text_base.to_le_bytes()); // source_offset
+    record.extend_from_slice(&source_len.to_le_bytes());
+    record.extend_from_slice(&(text_base + source_len).to_le_bytes()); // ruby_offset
+    record.extend_from_slice(&ruby_len.to_le_bytes());
+    record.extend_from_slice(&0u32.to_le_bytes()); // reserved0
+    record.extend_from_slice(source);
+    record.extend_from_slice(ruby);
+    Some(record)
+}
+
 pub unsafe extern "C" fn rfvp_resources_create(
     config: *const RfvpResourcesConfigV1,
     out_resources: *mut u64,
@@ -1475,6 +1525,10 @@ pub unsafe extern "C" fn rfvp_runtime_create(
                 audio_commands: VecDeque::new(),
                 pending_audio_command: None,
                 audio_queue_overflowed: false,
+                events_enabled: false,
+                event_queue: VecDeque::new(),
+                event_sequence: 0,
+                event_queue_overflowed: false,
                 width,
                 height,
                 exit_requested: false,
@@ -1541,6 +1595,27 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
             runtime.pending_frame = Some(next_frame);
             runtime.width = runtime.core.config().virtual_width;
             runtime.height = runtime.core.config().virtual_height;
+            // Always drain so the controller's outgoing queue cannot grow
+            // without bound; serialize into host events only when enabled.
+            let requests = runtime.core.drain_text_translation_requests();
+            if runtime.events_enabled {
+                for request in requests {
+                    if runtime.event_queue.len() >= MAX_PENDING_EVENTS {
+                        if !runtime.event_queue_overflowed {
+                            runtime.event_queue_overflowed = true;
+                            log::warn!("RFVP host ABI event queue is full; dropping events");
+                        }
+                        break;
+                    }
+                    runtime.event_sequence = runtime.event_sequence.wrapping_add(1);
+                    let sequence = runtime.event_sequence;
+                    let Some(record) = text_translation_event_record(&request, sequence) else {
+                        log::warn!("RFVP host ABI dropped an oversized text translation event");
+                        continue;
+                    };
+                    runtime.event_queue.push_back(record);
+                }
+            }
             RFVP_STATUS_OK
         })
     })
@@ -1554,6 +1629,185 @@ pub unsafe extern "C" fn rfvp_runtime_is_exit_requested(runtime: u64) -> i32 {
                 .get(Handle::from_raw(runtime))
                 .map(|runtime| if runtime.exit_requested { 1 } else { 0 })
                 .unwrap_or(0)
+        })
+    })
+}
+
+pub unsafe extern "C" fn rfvp_runtime_events_enable(runtime: u64, enabled: i32) -> i32 {
+    guard_status(|| {
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            runtime.events_enabled = enabled != 0;
+            if !runtime.events_enabled {
+                // Dropping queued events on disable keeps a re-enabled host
+                // from observing stale records from before the gap.
+                runtime.event_queue.clear();
+            }
+            RFVP_STATUS_OK
+        })
+    })
+}
+
+/// Returns the byte size of the next queued event record, or 0 when empty.
+pub unsafe extern "C" fn rfvp_runtime_next_event_size(runtime: u64) -> usize {
+    guard_u64(|| {
+        with_state(|state| {
+            state
+                .runtimes
+                .get(Handle::from_raw(runtime))
+                .and_then(|runtime| {
+                    runtime
+                        .event_queue
+                        .front()
+                        .map(|record| record.len() as u64)
+                })
+                .unwrap_or(0)
+        })
+    }) as usize
+}
+
+/// Pops complete queued event records into `out` while they fit in
+/// `capacity` bytes, writes the record count to `out_count`, and returns the
+/// total bytes written. A record larger than `capacity` stays queued; use
+/// `rfvp_runtime_next_event_size` to size the buffer.
+pub unsafe extern "C" fn rfvp_runtime_poll_events(
+    runtime: u64,
+    out: *mut u8,
+    capacity: usize,
+    out_count: *mut u32,
+) -> usize {
+    guard_u64(|| {
+        if !out_count.is_null() {
+            unsafe { *out_count = 0 };
+        }
+        if out.is_null() || capacity == 0 {
+            return 0;
+        }
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return 0;
+            };
+            let mut total = 0usize;
+            let mut count = 0u32;
+            loop {
+                let Some(record) = runtime.event_queue.front() else {
+                    break;
+                };
+                if record.len() > capacity - total {
+                    break;
+                }
+                let record = runtime.event_queue.pop_front().expect("front was checked");
+                unsafe {
+                    std::ptr::copy_nonoverlapping(record.as_ptr(), out.add(total), record.len());
+                }
+                total += record.len();
+                count = count.saturating_add(1);
+            }
+            if !out_count.is_null() {
+                unsafe { *out_count = count };
+            }
+            total as u64
+        })
+    }) as usize
+}
+
+pub unsafe extern "C" fn rfvp_runtime_set_text_hidpi(runtime: u64, enabled: i32) -> i32 {
+    guard_status(|| {
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            runtime.core.set_text_hidpi_enabled(enabled != 0);
+            RFVP_STATUS_OK
+        })
+    })
+}
+
+/// Installs the exact replacement table. `encoding` must be
+/// `RFVP_SERIALIZATION_JSON`; the blob is a UTF-8 JSON object mapping each
+/// source string to its replacement. An empty blob clears the table.
+pub unsafe extern "C" fn rfvp_runtime_set_text_replacements(
+    runtime: u64,
+    blob: *const u8,
+    blob_size: usize,
+    encoding: u32,
+) -> i32 {
+    guard_status(|| {
+        if encoding != RFVP_SERIALIZATION_JSON {
+            return RFVP_STATUS_INVALID_ARGUMENT;
+        }
+        let blob = match read_utf8(blob, blob_size) {
+            Ok(blob) => blob,
+            Err(status) => return status,
+        };
+        let replacements = if blob.is_empty() {
+            Vec::new()
+        } else {
+            let parsed = match serde_json::from_str::<serde_json::Value>(&blob) {
+                Ok(serde_json::Value::Object(map)) => map,
+                _ => return RFVP_STATUS_INVALID_DATA,
+            };
+            let mut replacements = Vec::with_capacity(parsed.len());
+            for (source, value) in parsed {
+                let Some(target) = value.as_str() else {
+                    return RFVP_STATUS_INVALID_DATA;
+                };
+                replacements.push((source, target.to_owned()));
+            }
+            replacements
+        };
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            runtime.core.set_text_replacements(replacements);
+            RFVP_STATUS_OK
+        })
+    })
+}
+
+pub unsafe extern "C" fn rfvp_runtime_set_text_translation_enabled(
+    runtime: u64,
+    enabled: i32,
+) -> i32 {
+    guard_status(|| {
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            runtime
+                .core
+                .set_text_translation_online_enabled(enabled != 0);
+            RFVP_STATUS_OK
+        })
+    })
+}
+
+/// Submits an asynchronous translation result. A null or empty `translated`
+/// keeps the original text. Unknown or stale serials are ignored (the slot
+/// may have moved on while the host was translating) and still return OK.
+pub unsafe extern "C" fn rfvp_runtime_submit_text_translation(
+    runtime: u64,
+    serial: u64,
+    translated_utf8: *const u8,
+    translated_len: usize,
+) -> i32 {
+    guard_status(|| {
+        let translated = match read_utf8(translated_utf8, translated_len) {
+            Ok(text) => text,
+            Err(status) => return status,
+        };
+        let translated = (!translated.is_empty()).then_some(translated);
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            runtime
+                .core
+                .submit_text_translation(serial, translated.as_deref());
+            RFVP_STATUS_OK
         })
     })
 }
@@ -1654,10 +1908,13 @@ pub unsafe extern "C" fn rfvp_runtime_capabilities(runtime: u64) -> u64 {
                 .runtimes
                 .get(Handle::from_raw(runtime))
                 .map(|_| {
-                    RFVP_CAPABILITY_TEXTURES
+                    RFVP_CAPABILITY_EVENTS
+                        | RFVP_CAPABILITY_TEXTURES
                         | RFVP_CAPABILITY_DRAW_IMAGE
                         | RFVP_CAPABILITY_DRAW_GLYPH
                         | RFVP_CAPABILITY_HIT_PROXIES
+                        | RFVP_CAPABILITY_TEXT_REPLACEMENTS
+                        | RFVP_CAPABILITY_TEXT_TRANSLATION
                         | RFVP_CAPABILITY_AUDIO_COMMANDS
                 })
                 .unwrap_or(0)
@@ -1839,6 +2096,366 @@ mod tests {
             save_root_len: 0,
             reserved: [0; 4],
         }
+    }
+
+    /// A runtime around an unbooted core: `tick` is a no-op besides draining,
+    /// which is exactly the surface the event/translation ABI needs.
+    fn insert_test_runtime() -> u64 {
+        let core = RfvpCore::new(RfvpCoreConfig::default());
+        let host = HostPlatform::new(".");
+        with_state(|state| {
+            state
+                .runtimes
+                .insert(HostRuntime {
+                    core,
+                    host,
+                    pending_frame: None,
+                    audio_commands: VecDeque::new(),
+                    pending_audio_command: None,
+                    audio_queue_overflowed: false,
+                    events_enabled: false,
+                    event_queue: VecDeque::new(),
+                    event_sequence: 0,
+                    event_queue_overflowed: false,
+                    width: 0,
+                    height: 0,
+                    exit_requested: false,
+                    active_frame: None,
+                })
+                .raw()
+        })
+    }
+
+    fn with_test_runtime<R>(runtime: u64, f: impl FnOnce(&mut HostRuntime) -> R) -> R {
+        with_state(|state| f(state.runtimes.get_mut(Handle::from_raw(runtime)).unwrap()))
+    }
+
+    struct DecodedTranslationEvent {
+        abi_version: u32,
+        kind: u32,
+        sequence: u64,
+        payload_size: u32,
+        serial: u64,
+        generation: u64,
+        slot: u32,
+        source: String,
+        ruby: String,
+    }
+
+    fn decode_translation_event(record: &[u8]) -> DecodedTranslationEvent {
+        let u32_at =
+            |offset: usize| u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap());
+        let u64_at =
+            |offset: usize| u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap());
+        let header_size = size_of::<RfvpEventHeaderV1>();
+        let payload = &record[header_size..];
+        let payload_u32 =
+            |offset: usize| u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap());
+        let payload_u64 =
+            |offset: usize| u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        let source_offset = payload_u32(28) as usize;
+        let source_len = payload_u32(32) as usize;
+        let ruby_offset = payload_u32(36) as usize;
+        let ruby_len = payload_u32(40) as usize;
+        DecodedTranslationEvent {
+            abi_version: u32_at(0),
+            kind: u32_at(4),
+            sequence: u64_at(8),
+            payload_size: u32_at(16),
+            serial: payload_u64(8),
+            generation: payload_u64(16),
+            slot: payload_u32(24),
+            source: String::from_utf8(payload[source_offset..source_offset + source_len].to_vec())
+                .unwrap(),
+            ruby: String::from_utf8(payload[ruby_offset..ruby_offset + ruby_len].to_vec()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn translation_request_is_queued_and_polled_as_event_record() {
+        let runtime = insert_test_runtime();
+        assert_eq!(unsafe { rfvp_runtime_next_event_size(runtime) }, 0);
+
+        assert_eq!(
+            unsafe { rfvp_runtime_events_enable(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { rfvp_runtime_set_text_translation_enabled(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        with_test_runtime(runtime, |runtime| {
+            runtime.core.set_text_content_for_test(3, "原文テキスト");
+        });
+        assert_eq!(
+            with_test_runtime(runtime, |runtime| runtime
+                .core
+                .pending_text_translation_count()),
+            1
+        );
+
+        assert_eq!(unsafe { rfvp_runtime_step(runtime, 16) }, RFVP_STATUS_OK);
+
+        let size = unsafe { rfvp_runtime_next_event_size(runtime) };
+        let expected = size_of::<RfvpEventHeaderV1>()
+            + size_of::<RfvpTextTranslationEventV1>()
+            + "原文テキスト".len();
+        assert_eq!(size, expected);
+
+        let mut buffer = vec![0u8; size];
+        let mut count = 0u32;
+        let written = unsafe {
+            rfvp_runtime_poll_events(runtime, buffer.as_mut_ptr(), buffer.len(), &mut count)
+        };
+        assert_eq!(written, size);
+        assert_eq!(count, 1);
+        assert_eq!(unsafe { rfvp_runtime_next_event_size(runtime) }, 0);
+
+        let event = decode_translation_event(&buffer);
+        assert_eq!(event.abi_version, RFVP_API_ABI_VERSION);
+        assert_eq!(event.kind, RFVP_EVENT_TEXT_TRANSLATION);
+        assert_eq!(event.sequence, 1);
+        assert_eq!(
+            event.payload_size as usize,
+            size_of::<RfvpTextTranslationEventV1>() + "原文テキスト".len()
+        );
+        assert_ne!(event.serial, 0);
+        assert_eq!(event.slot, 3);
+        assert_eq!(event.source, "原文テキスト");
+        assert_eq!(event.ruby, "");
+
+        // The request stays pending until the host submits a result.
+        assert_eq!(
+            with_test_runtime(runtime, |runtime| runtime
+                .core
+                .pending_text_translation_count()),
+            1
+        );
+
+        let translated = "translated text";
+        assert_eq!(
+            unsafe {
+                rfvp_runtime_submit_text_translation(
+                    runtime,
+                    event.serial,
+                    translated.as_ptr(),
+                    translated.len(),
+                )
+            },
+            RFVP_STATUS_OK
+        );
+        // The controller holds the result until the slot generation consumes it.
+        assert_eq!(
+            with_test_runtime(runtime, |runtime| runtime
+                .core
+                .pending_text_translation_count()),
+            1
+        );
+    }
+
+    #[test]
+    fn submit_with_empty_translation_keeps_original_and_clears_pending() {
+        let runtime = insert_test_runtime();
+        assert_eq!(
+            unsafe { rfvp_runtime_events_enable(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { rfvp_runtime_set_text_translation_enabled(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        with_test_runtime(runtime, |runtime| {
+            runtime.core.set_text_content_for_test(1, "keep me");
+        });
+        assert_eq!(unsafe { rfvp_runtime_step(runtime, 16) }, RFVP_STATUS_OK);
+        let size = unsafe { rfvp_runtime_next_event_size(runtime) };
+        assert!(size > 0);
+        let mut buffer = vec![0u8; size];
+        let mut count = 0u32;
+        let written = unsafe {
+            rfvp_runtime_poll_events(runtime, buffer.as_mut_ptr(), buffer.len(), &mut count)
+        };
+        assert_eq!(written, size);
+        let event = decode_translation_event(&buffer);
+        assert_eq!(event.source, "keep me");
+
+        assert_eq!(
+            unsafe { rfvp_runtime_submit_text_translation(runtime, event.serial, ptr::null(), 0) },
+            RFVP_STATUS_OK
+        );
+        assert_eq!(
+            with_test_runtime(runtime, |runtime| runtime
+                .core
+                .pending_text_translation_count()),
+            0
+        );
+
+        // A stale/unknown serial is ignored, not an error.
+        assert_eq!(
+            unsafe { rfvp_runtime_submit_text_translation(runtime, 4242, ptr::null(), 0) },
+            RFVP_STATUS_OK
+        );
+    }
+
+    #[test]
+    fn events_disabled_drains_without_queueing() {
+        let runtime = insert_test_runtime();
+        assert_eq!(
+            unsafe { rfvp_runtime_set_text_translation_enabled(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        with_test_runtime(runtime, |runtime| {
+            runtime.core.set_text_content_for_test(0, "no events");
+        });
+        assert_eq!(unsafe { rfvp_runtime_step(runtime, 16) }, RFVP_STATUS_OK);
+        assert_eq!(unsafe { rfvp_runtime_next_event_size(runtime) }, 0);
+
+        let mut buffer = [0u8; 64];
+        let mut count = 1u32;
+        let written = unsafe {
+            rfvp_runtime_poll_events(runtime, buffer.as_mut_ptr(), buffer.len(), &mut count)
+        };
+        assert_eq!(written, 0);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn poll_events_respects_capacity_and_reports_invalid_handles() {
+        let runtime = insert_test_runtime();
+        assert_eq!(
+            unsafe { rfvp_runtime_events_enable(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { rfvp_runtime_set_text_translation_enabled(runtime, 1) },
+            RFVP_STATUS_OK
+        );
+        with_test_runtime(runtime, |runtime| {
+            runtime.core.set_text_content_for_test(0, "first");
+            runtime.core.set_text_content_for_test(1, "second");
+        });
+        assert_eq!(unsafe { rfvp_runtime_step(runtime, 16) }, RFVP_STATUS_OK);
+
+        let first_size = unsafe { rfvp_runtime_next_event_size(runtime) };
+        // A buffer too small for the first record pops nothing.
+        let mut small = vec![0u8; first_size - 1];
+        let mut count = 7u32;
+        let written = unsafe {
+            rfvp_runtime_poll_events(runtime, small.as_mut_ptr(), small.len(), &mut count)
+        };
+        assert_eq!(written, 0);
+        assert_eq!(count, 0);
+        assert_eq!(unsafe { rfvp_runtime_next_event_size(runtime) }, first_size);
+
+        // Exact fit pops just the first record; the second stays queued.
+        let mut one = vec![0u8; first_size];
+        let written =
+            unsafe { rfvp_runtime_poll_events(runtime, one.as_mut_ptr(), one.len(), &mut count) };
+        assert_eq!(written, first_size);
+        assert_eq!(count, 1);
+        let event = decode_translation_event(&one);
+        assert_eq!(event.sequence, 1);
+        assert_eq!(event.source, "first");
+        assert!(unsafe { rfvp_runtime_next_event_size(runtime) } > 0);
+
+        assert_eq!(unsafe { rfvp_runtime_next_event_size(0xdead_beef) }, 0);
+        let written = unsafe {
+            rfvp_runtime_poll_events(0xdead_beef, one.as_mut_ptr(), one.len(), &mut count)
+        };
+        assert_eq!(written, 0);
+        assert_eq!(count, 0);
+
+        // Disabling drops queued events.
+        assert_eq!(
+            unsafe { rfvp_runtime_events_enable(runtime, 0) },
+            RFVP_STATUS_OK
+        );
+        assert_eq!(unsafe { rfvp_runtime_next_event_size(runtime) }, 0);
+    }
+
+    #[test]
+    fn set_text_replacements_accepts_json_objects_only() {
+        let runtime = insert_test_runtime();
+        let blob = br#"{"source A":"target A","source B":"target B"}"#;
+        assert_eq!(
+            unsafe {
+                rfvp_runtime_set_text_replacements(
+                    runtime,
+                    blob.as_ptr(),
+                    blob.len(),
+                    RFVP_SERIALIZATION_JSON,
+                )
+            },
+            RFVP_STATUS_OK
+        );
+        // An exact replacement is served synchronously: no request is queued.
+        with_test_runtime(runtime, |runtime| {
+            runtime.core.set_text_translation_online_enabled(true);
+            runtime.core.set_text_content_for_test(0, "source A");
+            assert!(runtime.core.drain_text_translation_requests().is_empty());
+            assert_eq!(runtime.core.pending_text_translation_count(), 0);
+        });
+
+        // Wrong encoding and malformed payloads are rejected.
+        assert_eq!(
+            unsafe { rfvp_runtime_set_text_replacements(runtime, blob.as_ptr(), blob.len(), 0) },
+            RFVP_STATUS_INVALID_ARGUMENT
+        );
+        let not_json = b"not json";
+        assert_eq!(
+            unsafe {
+                rfvp_runtime_set_text_replacements(
+                    runtime,
+                    not_json.as_ptr(),
+                    not_json.len(),
+                    RFVP_SERIALIZATION_JSON,
+                )
+            },
+            RFVP_STATUS_INVALID_DATA
+        );
+        let non_string_value = br#"{"source":42}"#;
+        assert_eq!(
+            unsafe {
+                rfvp_runtime_set_text_replacements(
+                    runtime,
+                    non_string_value.as_ptr(),
+                    non_string_value.len(),
+                    RFVP_SERIALIZATION_JSON,
+                )
+            },
+            RFVP_STATUS_INVALID_DATA
+        );
+
+        // An empty blob clears the table: the same source now queues a request.
+        assert_eq!(
+            unsafe {
+                rfvp_runtime_set_text_replacements(runtime, ptr::null(), 0, RFVP_SERIALIZATION_JSON)
+            },
+            RFVP_STATUS_OK
+        );
+        with_test_runtime(runtime, |runtime| {
+            runtime.core.set_text_content_for_test(0, "source A");
+            assert_eq!(runtime.core.pending_text_translation_count(), 1);
+        });
+    }
+
+    #[test]
+    fn record_serialization_includes_ruby_bytes() {
+        let request = TextTranslationRequest {
+            serial: 9,
+            slot: 2,
+            generation: 5,
+            source: "source".to_string(),
+            ruby: Some("ruby".to_string()),
+        };
+        let record = text_translation_event_record(&request, 7).unwrap();
+        let event = decode_translation_event(&record);
+        assert_eq!(event.serial, 9);
+        assert_eq!(event.generation, 5);
+        assert_eq!(event.slot, 2);
+        assert_eq!(event.sequence, 7);
+        assert_eq!(event.source, "source");
+        assert_eq!(event.ruby, "ruby");
     }
 
     #[test]

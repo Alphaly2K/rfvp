@@ -487,14 +487,20 @@ pub(crate) static API_V1: RfvpApiV1 = RfvpApiV1 {
     runtime_destroy: host_runtime_entry!(super::runtime::rfvp_runtime_destroy),
     runtime_step: host_runtime_entry!(super::runtime::rfvp_runtime_step),
     runtime_is_exit_requested: host_runtime_entry!(super::runtime::rfvp_runtime_is_exit_requested),
-    runtime_events_enable: None,
-    runtime_next_event_size: None,
-    runtime_poll_events: None,
+    runtime_events_enable: host_runtime_entry!(super::runtime::rfvp_runtime_events_enable),
+    runtime_next_event_size: host_runtime_entry!(super::runtime::rfvp_runtime_next_event_size),
+    runtime_poll_events: host_runtime_entry!(super::runtime::rfvp_runtime_poll_events),
     runtime_push_input: host_runtime_entry!(super::runtime::rfvp_runtime_push_input),
-    runtime_set_text_hidpi: None,
-    runtime_set_text_replacements: None,
-    runtime_set_text_translation_enabled: None,
-    runtime_submit_text_translation: None,
+    runtime_set_text_hidpi: host_runtime_entry!(super::runtime::rfvp_runtime_set_text_hidpi),
+    runtime_set_text_replacements: host_runtime_entry!(
+        super::runtime::rfvp_runtime_set_text_replacements
+    ),
+    runtime_set_text_translation_enabled: host_runtime_entry!(
+        super::runtime::rfvp_runtime_set_text_translation_enabled
+    ),
+    runtime_submit_text_translation: host_runtime_entry!(
+        super::runtime::rfvp_runtime_submit_text_translation
+    ),
     runtime_set_render_quality_preset: None,
     runtime_set_media_enabled: None,
     runtime_notify_lifecycle: None,
@@ -562,6 +568,13 @@ mod tests {
             assert!(api.runtime_step.is_some());
             assert!(api.runtime_poll_audio_command.is_some());
             assert!(api.runtime_push_input.is_some());
+            assert!(api.runtime_events_enable.is_some());
+            assert!(api.runtime_next_event_size.is_some());
+            assert!(api.runtime_poll_events.is_some());
+            assert!(api.runtime_set_text_hidpi.is_some());
+            assert!(api.runtime_set_text_replacements.is_some());
+            assert!(api.runtime_set_text_translation_enabled.is_some());
+            assert!(api.runtime_submit_text_translation.is_some());
             assert!(api.frame_release.is_some());
         }
         #[cfg(not(all(
@@ -572,6 +585,12 @@ mod tests {
         {
             assert!(api.resources_create.is_none());
             assert!(api.runtime_create.is_none());
+            assert!(api.runtime_events_enable.is_none());
+            assert!(api.runtime_next_event_size.is_none());
+            assert!(api.runtime_poll_events.is_none());
+            assert!(api.runtime_set_text_replacements.is_none());
+            assert!(api.runtime_set_text_translation_enabled.is_none());
+            assert!(api.runtime_submit_text_translation.is_none());
             assert!(api.frame_release.is_none());
         }
     }
