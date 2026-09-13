@@ -24,11 +24,11 @@ use crate::host_abi::v1::{
     RFVP_AUDIO_SET_PARAMS, RFVP_AUDIO_STOP, RFVP_AUDIO_SUBMIT_F32, RFVP_AUDIO_SUBMIT_I16,
     RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY, RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT,
     RFVP_CAPABILITY_AUDIO_COMMANDS, RFVP_CAPABILITY_DRAW_GLYPH, RFVP_CAPABILITY_DRAW_IMAGE,
-    RFVP_CAPABILITY_EVENTS, RFVP_CAPABILITY_HIT_PROXIES, RFVP_CAPABILITY_TEXTURES,
-    RFVP_CAPABILITY_TEXT_REPLACEMENTS, RFVP_CAPABILITY_TEXT_TRANSLATION, RFVP_DRAW_FLAG_HAS_CLIP,
-    RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE, RFVP_EVENT_TEXT_TRANSLATION,
-    RFVP_INPUT_FOCUS, RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN, RFVP_INPUT_PHASE_MOVE,
-    RFVP_INPUT_PHASE_REPEAT, RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON,
+    RFVP_CAPABILITY_EVENTS, RFVP_CAPABILITY_FONT_OVERRIDE, RFVP_CAPABILITY_HIT_PROXIES,
+    RFVP_CAPABILITY_TEXTURES, RFVP_CAPABILITY_TEXT_REPLACEMENTS, RFVP_CAPABILITY_TEXT_TRANSLATION,
+    RFVP_DRAW_FLAG_HAS_CLIP, RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE,
+    RFVP_EVENT_TEXT_TRANSLATION, RFVP_INPUT_FOCUS, RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN,
+    RFVP_INPUT_PHASE_MOVE, RFVP_INPUT_PHASE_REPEAT, RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON,
     RFVP_INPUT_POINTER_MOVE, RFVP_INPUT_QUIT, RFVP_INPUT_TEXT, RFVP_INPUT_TOUCH, RFVP_INPUT_WHEEL,
     RFVP_INVALID_HANDLE, RFVP_KEY_ALT, RFVP_KEY_BACKSPACE, RFVP_KEY_CONTROL, RFVP_KEY_DELETE,
     RFVP_KEY_DOWN, RFVP_KEY_END, RFVP_KEY_ESCAPE, RFVP_KEY_HOME, RFVP_KEY_INSERT, RFVP_KEY_LEFT,
@@ -1725,6 +1725,45 @@ pub unsafe extern "C" fn rfvp_runtime_set_text_hidpi(runtime: u64, enabled: i32)
     })
 }
 
+/// Installs a forced replacement font face used as the primary for every text
+/// draw regardless of the script-requested face. `data` must be a complete
+/// TrueType/OpenType font; invalid bytes are rejected with
+/// `RFVP_STATUS_INVALID_DATA` and leave any previous override untouched.
+pub unsafe extern "C" fn rfvp_runtime_set_font_override(
+    runtime: u64,
+    data: *const u8,
+    data_size: usize,
+) -> i32 {
+    guard_status(|| {
+        if data.is_null() || data_size == 0 {
+            return RFVP_STATUS_INVALID_ARGUMENT;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, data_size) }.to_vec();
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            if runtime.core.set_font_override(bytes) {
+                RFVP_STATUS_OK
+            } else {
+                RFVP_STATUS_INVALID_DATA
+            }
+        })
+    })
+}
+
+pub unsafe extern "C" fn rfvp_runtime_clear_font_override(runtime: u64) -> i32 {
+    guard_status(|| {
+        with_state(|state| {
+            let Some(runtime) = state.runtimes.get_mut(Handle::from_raw(runtime)) else {
+                return RFVP_STATUS_INVALID_HANDLE;
+            };
+            runtime.core.clear_font_override();
+            RFVP_STATUS_OK
+        })
+    })
+}
+
 /// Installs the exact replacement table. `encoding` must be
 /// `RFVP_SERIALIZATION_JSON`; the blob is a UTF-8 JSON object mapping each
 /// source string to its replacement. An empty blob clears the table.
@@ -1916,6 +1955,7 @@ pub unsafe extern "C" fn rfvp_runtime_capabilities(runtime: u64) -> u64 {
                         | RFVP_CAPABILITY_TEXT_REPLACEMENTS
                         | RFVP_CAPABILITY_TEXT_TRANSLATION
                         | RFVP_CAPABILITY_AUDIO_COMMANDS
+                        | RFVP_CAPABILITY_FONT_OVERRIDE
                 })
                 .unwrap_or(0)
         })

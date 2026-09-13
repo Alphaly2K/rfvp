@@ -697,6 +697,11 @@ pub struct FontEnumerator {
     system_fallback_scan_done: bool,
     system_fallback_enabled: bool,
 
+    // Host-forced replacement face. When set, every text draw uses this face as
+    // the primary regardless of the script-requested fontface id; the normal
+    // fallback chain still applies after it for missing glyphs.
+    font_override: Option<LoadedFont>,
+
     system_fontface_id: i32,
     current_font_name: String,
 }
@@ -737,6 +742,7 @@ impl FontEnumerator {
             system_fallback_fonts: vec![],
             system_fallback_scan_done: false,
             system_fallback_enabled: false,
+            font_override: None,
             system_fontface_id: FONTFACE_MS_GOTHIC,
             current_font_name: "MS Gothic".to_string(),
         }
@@ -750,6 +756,37 @@ impl FontEnumerator {
 
     pub fn set_system_font_fallback_enabled(&mut self, enabled: bool) {
         self.system_fallback_enabled = enabled;
+    }
+
+    /// Installs a host-forced replacement face parsed from raw font bytes
+    /// (same loader as game-directory fonts). While set, every text draw uses
+    /// this face as the primary regardless of the script-requested fontface;
+    /// the usual fallback chain still covers glyphs the override lacks.
+    /// Returns false when the bytes are not a valid font.
+    pub fn set_font_override(&mut self, bytes: Vec<u8>) -> bool {
+        let name =
+            extract_font_face_name(&bytes).unwrap_or_else(|| "host font override".to_string());
+        match Font::from_vec(bytes) {
+            Ok(font) => {
+                log::info!("Font override installed: face '{}'", name);
+                self.font_override = Some(LoadedFont {
+                    name,
+                    file_name: String::new(),
+                    font,
+                });
+                true
+            }
+            Err(e) => {
+                log::warn!("Font override rejected: invalid font data: {}", e);
+                false
+            }
+        }
+    }
+
+    pub fn clear_font_override(&mut self) {
+        if self.font_override.take().is_some() {
+            log::info!("Font override cleared");
+        }
     }
 
     pub fn init_fontface(&mut self) -> Result<()> {
@@ -804,9 +841,9 @@ impl FontEnumerator {
         Ok(())
     }
 
-    fn init_system_fallback_fonts(&mut self) {
+    pub fn init_system_fallback_fonts(&mut self) -> usize {
         if self.system_fallback_scan_done {
-            return;
+            return self.system_fallback_fonts.len();
         }
         self.system_fallback_scan_done = true;
 
@@ -855,6 +892,7 @@ impl FontEnumerator {
             "System CJK fallback font scan done: loaded {} font(s)",
             loaded_count
         );
+        loaded_count
     }
 
     pub fn set_current_font_name(&mut self, name: &str) {
@@ -939,7 +977,14 @@ impl FontEnumerator {
     }
 
     fn get_font_fallback_set(&self, id: i32) -> FontFallbackSet {
-        let primary = self.get_font(id);
+        // A host-forced override replaces the primary for every requested face;
+        // the rest of the fallback chain is unchanged so glyphs missing from
+        // the override still resolve.
+        let primary = self
+            .font_override
+            .as_ref()
+            .map(|override_font| override_font.font.clone())
+            .unwrap_or_else(|| self.get_font(id));
         let prefer_game_cjk = match id {
             FONTFACE_MS_GOTHIC | FONTFACE_MS_MINCHO | FONTFACE_MS_PGOTHIC | FONTFACE_MS_PMINCHO => {
                 true
@@ -3982,5 +4027,45 @@ mod hidpi_surface_tests {
         manager.set_text_clear(2);
         assert!(!manager.submit_text_translation(third.serial, Some("third translated")));
         assert!(manager.items[2].content_text.is_empty());
+    }
+}
+
+#[cfg(all(test, not(feature = "no_std")))]
+mod font_override_tests {
+    use super::*;
+
+    #[test]
+    fn font_override_replaces_primary_for_every_requested_face() {
+        let mut fonts = FontEnumerator::new();
+
+        // MS Gothic and MS Mincho must rasterize 'A' differently, otherwise
+        // this test cannot tell the override apart from the requested face.
+        let (_, gothic_a) = fonts.get_font(FONTFACE_MS_GOTHIC).rasterize('A', 16.0);
+        let (_, mincho_a) = fonts.get_font(FONTFACE_MS_MINCHO).rasterize('A', 16.0);
+        assert_ne!(gothic_a, mincho_a);
+
+        let mincho_bytes = include_bytes!("./fonts/MSMINCHO.TTF").to_vec();
+        assert!(fonts.set_font_override(mincho_bytes));
+        for id in [FONTFACE_CURRENT, FONTFACE_MS_GOTHIC, FONTFACE_MS_PMINCHO, 0] {
+            let set = fonts.get_font_fallback_set(id);
+            let (_, bitmap) = set.primary().rasterize('A', 16.0);
+            assert_eq!(bitmap, mincho_a, "override must be primary for id {id}");
+        }
+
+        fonts.clear_font_override();
+        let set = fonts.get_font_fallback_set(FONTFACE_MS_GOTHIC);
+        let (_, bitmap) = set.primary().rasterize('A', 16.0);
+        assert_eq!(bitmap, gothic_a);
+    }
+
+    #[test]
+    fn font_override_rejects_invalid_font_data() {
+        let mut fonts = FontEnumerator::new();
+        assert!(!fonts.set_font_override(vec![0u8; 32]));
+        assert!(fonts.font_override.is_none());
+        let set = fonts.get_font_fallback_set(FONTFACE_MS_GOTHIC);
+        let (_, bitmap) = set.primary().rasterize('A', 16.0);
+        let (_, gothic_a) = fonts.get_font(FONTFACE_MS_GOTHIC).rasterize('A', 16.0);
+        assert_eq!(bitmap, gothic_a);
     }
 }

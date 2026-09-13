@@ -230,6 +230,18 @@ impl RfvpCore {
             .set_hidpi_enabled(enabled);
     }
 
+    /// Installs a host-forced replacement face used as the primary font for
+    /// every text draw. Returns false when `bytes` is not a valid font.
+    #[cfg(not(feature = "no_std"))]
+    pub fn set_font_override(&mut self, bytes: Vec<u8>) -> bool {
+        self.game_data.fontface_manager.set_font_override(bytes)
+    }
+
+    #[cfg(not(feature = "no_std"))]
+    pub fn clear_font_override(&mut self) {
+        self.game_data.fontface_manager.clear_font_override();
+    }
+
     pub fn set_text_translation_online_enabled(&mut self, enabled: bool) {
         self.game_data
             .motion_manager
@@ -372,6 +384,17 @@ impl RfvpCore {
         } else {
             FontEnumerator::new()
         };
+        // The embedded MS Gothic/Mincho faces lack simplified-Chinese glyphs;
+        // scan the host OS for CJK fonts so translated text can rasterize.
+        #[cfg(not(feature = "no_std"))]
+        {
+            fontface_manager.set_system_font_fallback_enabled(true);
+            let loaded = fontface_manager.init_system_fallback_fonts();
+            host.log(
+                RfvpLogLevel::Info,
+                &format!("rfvp host boot: loaded {loaded} system CJK fallback font(s)"),
+            );
+        }
         let mut screen = parser.get_screen_size();
         #[cfg(feature = "old_school")]
         {
