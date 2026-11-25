@@ -163,6 +163,18 @@ pub fn save_global_savedata_v1(game_data: &GameData) -> Result<()> {
 /// Write `rfvp_global.bin` to an explicit path (host-runtime save root).
 #[cfg(not(feature = "no_std"))]
 pub fn save_global_savedata_v1_to(game_data: &GameData, path: &std::path::Path) -> Result<()> {
+    let out = encode_global_savedata_v1(game_data)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    }
+    std::fs::write(path, &out).with_context(|| format!("write {}", path.display()))?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "no_std"))]
+pub(crate) fn encode_global_savedata_v1(game_data: &GameData) -> Result<Vec<u8>> {
     let snap = GlobalSaveDataV1::capture(game_data);
     let payload = bincode_opts()
         .serialize(&snap)
@@ -185,14 +197,7 @@ pub fn save_global_savedata_v1_to(game_data: &GameData, path: &std::path::Path) 
     out.extend_from_slice(&payload);
     out.extend_from_slice(&len_u32.to_le_bytes());
     out.extend_from_slice(&GLOBAL_SAVE_MAGIC);
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create_dir_all {}", parent.display()))?;
-    }
-    std::fs::write(path, &out).with_context(|| format!("write {}", path.display()))?;
-
-    Ok(())
+    Ok(out)
 }
 
 #[cfg(feature = "no_std")]
@@ -216,7 +221,12 @@ pub fn try_load_global_savedata_v1_from(
     }
 
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let Some(snap) = try_decode_global_savedata_v1(&bytes)? else {
+    apply_global_savedata_v1(game_data, &bytes)
+}
+
+#[cfg(not(feature = "no_std"))]
+pub(crate) fn apply_global_savedata_v1(game_data: &mut GameData, bytes: &[u8]) -> Result<bool> {
+    let Some(snap) = try_decode_global_savedata_v1(bytes)? else {
         return Ok(false);
     };
 

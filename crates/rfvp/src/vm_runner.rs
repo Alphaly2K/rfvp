@@ -1,6 +1,4 @@
 use anyhow::Result;
-#[cfg(not(feature = "no_std"))]
-use std::fs;
 
 #[cfg(not(feature = "no_std"))]
 use crate::debug_ui;
@@ -100,8 +98,7 @@ impl VmRunner {
             }
             #[cfg(not(feature = "no_std"))]
             {
-                let path = game.save_manager.resolve_save_path_for_read(slot);
-                match fs::read(&path) {
+                match game.save_manager.read_slot_bytes(slot) {
                     Ok(bytes) => {
                         let nls = game.get_nls();
                         if let Err(e) = game
@@ -138,12 +135,7 @@ impl VmRunner {
                         }
                     }
                     Err(e) => {
-                        log::error!(
-                            "load: failed to read save slot {} from {}: {:#}",
-                            slot,
-                            path.display(),
-                            e
-                        );
+                        log::error!("load: failed to read save slot {slot}: {e:#}");
                     }
                 }
             }

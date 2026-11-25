@@ -328,6 +328,8 @@ impl VfsFile {
 pub struct Vfs {
     pub files: StableHashMap<String, VfsFile>,
     loose_files: StableHashMap<String, Vec<u8>>,
+    #[cfg(feature = "host-runtime")]
+    asset_source: Option<Arc<dyn crate::host_api::RfvpAssetSource>>,
     pub nls: Nls,
 }
 
@@ -336,6 +338,8 @@ impl Default for Vfs {
         Self {
             files: StableHashMap::default(),
             loose_files: StableHashMap::default(),
+            #[cfg(feature = "host-runtime")]
+            asset_source: None,
             nls: Nls::ShiftJIS,
         }
     }
@@ -347,6 +351,11 @@ impl Vfs {
             nls,
             ..Self::default()
         })
+    }
+
+    #[cfg(feature = "host-runtime")]
+    pub(crate) fn set_asset_source(&mut self, source: Arc<dyn crate::host_api::RfvpAssetSource>) {
+        self.asset_source = Some(source);
     }
 
     pub fn add_loose_file(&mut self, path: &str, bytes: Vec<u8>) {
@@ -391,6 +400,18 @@ impl Vfs {
 
         let normalized = path.replace('\\', "/");
         let normalized = normalized.trim_start_matches("./").trim_start_matches('/');
+        #[cfg(feature = "host-runtime")]
+        if let Some(source) = &self.asset_source {
+            match source.open(normalized) {
+                Ok(mut file) => {
+                    let len = file.len()?;
+                    let file = PackFile::Host(Arc::new(Mutex::new(file)));
+                    return Ok((Box::new(PackSlice::new(file, len, 0, len)?), Some(len)));
+                }
+                Err(crate::host_api::RfvpError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         let (folder, inner) = normalized
             .split_once('/')
             .ok_or_else(|| anyhow!("file not found: {}", path))?;

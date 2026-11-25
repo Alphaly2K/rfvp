@@ -25,17 +25,17 @@ use crate::host_abi::v1::{
     RFVP_BLEND_ADD, RFVP_BLEND_MULTIPLY, RFVP_BLEND_NORMAL, RFVP_BLEND_REVERSE_SUBTRACT,
     RFVP_CAPABILITY_AUDIO_COMMANDS, RFVP_CAPABILITY_DRAW_GLYPH, RFVP_CAPABILITY_DRAW_IMAGE,
     RFVP_CAPABILITY_EVENTS, RFVP_CAPABILITY_FONT_OVERRIDE, RFVP_CAPABILITY_HIT_PROXIES,
-    RFVP_CAPABILITY_TRACE_MASK,
     RFVP_CAPABILITY_TEXTURES, RFVP_CAPABILITY_TEXT_REPLACEMENTS, RFVP_CAPABILITY_TEXT_TRANSLATION,
-    RFVP_DRAW_FLAG_HAS_CLIP, RFVP_DRAW_FLAG_HAS_SRC_RECT, RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE,
-    RFVP_EVENT_TEXT_TRANSLATION, RFVP_INPUT_FOCUS, RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN,
-    RFVP_INPUT_PHASE_MOVE, RFVP_INPUT_PHASE_REPEAT, RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON,
-    RFVP_INPUT_POINTER_MOVE, RFVP_INPUT_QUIT, RFVP_INPUT_TEXT, RFVP_INPUT_TOUCH, RFVP_INPUT_WHEEL,
-    RFVP_INVALID_HANDLE, RFVP_KEY_ALT, RFVP_KEY_BACKSPACE, RFVP_KEY_CONTROL, RFVP_KEY_DELETE,
-    RFVP_KEY_DOWN, RFVP_KEY_END, RFVP_KEY_ESCAPE, RFVP_KEY_HOME, RFVP_KEY_INSERT, RFVP_KEY_LEFT,
-    RFVP_KEY_PAGE_DOWN, RFVP_KEY_PAGE_UP, RFVP_KEY_RETURN, RFVP_KEY_RIGHT, RFVP_KEY_SHIFT,
-    RFVP_KEY_SPACE, RFVP_KEY_TAB, RFVP_KEY_UP, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK,
-    RFVP_NLS_SHIFT_JIS, RFVP_NLS_UTF8, RFVP_POINTER_LEFT, RFVP_POINTER_MIDDLE, RFVP_POINTER_RIGHT,
+    RFVP_CAPABILITY_TRACE_MASK, RFVP_DRAW_FLAG_HAS_CLIP, RFVP_DRAW_FLAG_HAS_SRC_RECT,
+    RFVP_DRAW_GLYPH, RFVP_DRAW_IMAGE, RFVP_EVENT_TEXT_TRANSLATION, RFVP_INPUT_FOCUS,
+    RFVP_INPUT_KEY, RFVP_INPUT_PHASE_DOWN, RFVP_INPUT_PHASE_MOVE, RFVP_INPUT_PHASE_REPEAT,
+    RFVP_INPUT_PHASE_UP, RFVP_INPUT_POINTER_BUTTON, RFVP_INPUT_POINTER_MOVE, RFVP_INPUT_QUIT,
+    RFVP_INPUT_TEXT, RFVP_INPUT_TOUCH, RFVP_INPUT_WHEEL, RFVP_INVALID_HANDLE, RFVP_KEY_ALT,
+    RFVP_KEY_BACKSPACE, RFVP_KEY_CONTROL, RFVP_KEY_DELETE, RFVP_KEY_DOWN, RFVP_KEY_END,
+    RFVP_KEY_ESCAPE, RFVP_KEY_HOME, RFVP_KEY_INSERT, RFVP_KEY_LEFT, RFVP_KEY_PAGE_DOWN,
+    RFVP_KEY_PAGE_UP, RFVP_KEY_RETURN, RFVP_KEY_RIGHT, RFVP_KEY_SHIFT, RFVP_KEY_SPACE,
+    RFVP_KEY_TAB, RFVP_KEY_UP, RFVP_MESH_TRIANGLE_LIST, RFVP_NLS_GBK, RFVP_NLS_SHIFT_JIS,
+    RFVP_NLS_UTF8, RFVP_POINTER_LEFT, RFVP_POINTER_MIDDLE, RFVP_POINTER_RIGHT,
     RFVP_SERIALIZATION_JSON, RFVP_STATUS_BUSY, RFVP_STATUS_ENGINE, RFVP_STATUS_INVALID_ARGUMENT,
     RFVP_STATUS_INVALID_DATA, RFVP_STATUS_INVALID_HANDLE, RFVP_STATUS_NOT_FOUND,
     RFVP_STATUS_NO_COMMAND, RFVP_STATUS_NO_FRAME, RFVP_STATUS_OK, RFVP_STATUS_UNSUPPORTED,
@@ -115,16 +115,16 @@ struct PendingAudioCommand {
 }
 
 struct HostPlatform {
-    filesystem: HostFileSystem,
+    filesystem: PlatformAssets,
     renderer: HostRenderer,
     audio: HostAudio,
     clock: HostClock,
 }
 
 impl HostPlatform {
-    fn new(game_root: &str) -> Self {
+    fn new(assets: std::sync::Arc<dyn crate::host_api::RfvpAssetSource>) -> Self {
         Self {
-            filesystem: HostFileSystem::new(game_root),
+            filesystem: PlatformAssets(assets),
             renderer: HostRenderer::default(),
             audio: HostAudio::default(),
             clock: HostClock::new(),
@@ -133,7 +133,7 @@ impl HostPlatform {
 }
 
 impl RfvpHost for HostPlatform {
-    type FileSystem = HostFileSystem;
+    type FileSystem = PlatformAssets;
     type Renderer = HostRenderer;
     type Audio = HostAudio;
     type Clock = HostClock;
@@ -554,13 +554,34 @@ impl RfvpFile for HostFile {
     }
 }
 
-impl RfvpFileSystem for HostFileSystem {
-    type File = HostFile;
+struct PlatformAssets(std::sync::Arc<dyn crate::host_api::RfvpAssetSource>);
+
+impl RfvpFileSystem for PlatformAssets {
+    type File = crate::host_api::RfvpAssetFile;
 
     fn open(&mut self, path: &str) -> RfvpResult<Self::File> {
+        self.0.open(path)
+    }
+
+    fn metadata(&mut self, path: &str) -> RfvpResult<RfvpFileInfo> {
+        self.0.metadata(path)
+    }
+
+    fn enumerate_by_extension(
+        &mut self,
+        root: &str,
+        extension: &str,
+        visitor: &mut dyn FnMut(&str, RfvpFileInfo) -> RfvpResult<()>,
+    ) -> RfvpResult<()> {
+        self.0.enumerate(root, extension, visitor)
+    }
+}
+
+impl crate::host_api::RfvpAssetSource for HostFileSystem {
+    fn open(&self, path: &str) -> RfvpResult<crate::host_api::RfvpAssetFile> {
         let path = self.resolve(path)?;
         fs::File::open(path)
-            .map(|file| HostFile { file })
+            .map(|file| Box::new(HostFile { file }) as crate::host_api::RfvpAssetFile)
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     RfvpError::NotFound
@@ -570,15 +591,7 @@ impl RfvpFileSystem for HostFileSystem {
             })
     }
 
-    fn write_all(&mut self, path: &str, bytes: &[u8]) -> RfvpResult<()> {
-        let path = self.resolve(path)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|_| RfvpError::Io)?;
-        }
-        fs::write(path, bytes).map_err(|_| RfvpError::Io)
-    }
-
-    fn metadata(&mut self, path: &str) -> RfvpResult<RfvpFileInfo> {
+    fn metadata(&self, path: &str) -> RfvpResult<RfvpFileInfo> {
         let path = self.resolve(path)?;
         let metadata = fs::metadata(path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -599,8 +612,8 @@ impl RfvpFileSystem for HostFileSystem {
         })
     }
 
-    fn enumerate_by_extension(
-        &mut self,
+    fn enumerate(
+        &self,
         root: &str,
         extension_without_dot: &str,
         visitor: &mut dyn FnMut(&str, RfvpFileInfo) -> RfvpResult<()>,
@@ -1507,42 +1520,67 @@ pub unsafe extern "C" fn rfvp_runtime_create(
 
         let mut core = RfvpCore::new(RfvpCoreConfig::default());
         core.set_save_dir(Some(save_dir));
-        let mut host = HostPlatform::new(&game_root);
-        let boot = RfvpBootConfig {
-            asset_root: &game_root,
-            hcb_extension: "hcb",
-            max_hcb_bytes: 128 * 1024 * 1024,
-            max_manifest_entries: 16 * 1024,
-            nls,
-            require_default_font: false,
-        };
-        if let Err(error) = core.boot(&mut host, boot) {
-            let detail = core.last_error_detail().unwrap_or("no detail");
-            log::error!("rfvp_runtime_create failed: {error:?}: {detail}");
-            return RFVP_STATUS_ENGINE;
+        let host = HostPlatform::new(std::sync::Arc::new(HostFileSystem::new(&game_root)));
+        match open_runtime(core, host, &game_root, nls) {
+            Ok(handle) => {
+                unsafe { *out_runtime = handle };
+                RFVP_STATUS_OK
+            }
+            Err(status) => status,
         }
-        let (width, height) = (core.config().virtual_width, core.config().virtual_height);
-        let handle = with_state(|state| {
-            state.runtimes.insert(HostRuntime {
-                core,
-                host,
-                pending_frame: None,
-                audio_commands: VecDeque::new(),
-                pending_audio_command: None,
-                audio_queue_overflowed: false,
-                events_enabled: false,
-                event_queue: VecDeque::new(),
-                event_sequence: 0,
-                event_queue_overflowed: false,
-                width,
-                height,
-                exit_requested: false,
-                active_frame: None,
-            })
-        });
-        unsafe { *out_runtime = handle.raw() };
-        RFVP_STATUS_OK
     })
+}
+
+/// Boots from Host namespaces. All runtime handle calls stay on this thread.
+pub fn open_runtime_with_io(
+    assets: std::sync::Arc<dyn crate::host_api::RfvpAssetSource>,
+    saves: std::sync::Arc<dyn crate::host_api::RfvpSaveStore>,
+    nls: Nls,
+) -> Result<u64, i32> {
+    let mut core = RfvpCore::new(RfvpCoreConfig::default());
+    core.set_host_io(assets.clone(), saves);
+    open_runtime(core, HostPlatform::new(assets), ".", nls)
+}
+
+fn open_runtime(
+    mut core: RfvpCore,
+    mut host: HostPlatform,
+    asset_root: &str,
+    nls: Nls,
+) -> Result<u64, i32> {
+    let boot = RfvpBootConfig {
+        asset_root,
+        hcb_extension: "hcb",
+        max_hcb_bytes: 128 * 1024 * 1024,
+        max_manifest_entries: 16 * 1024,
+        nls,
+        require_default_font: false,
+    };
+    if let Err(error) = core.boot(&mut host, boot) {
+        let detail = core.last_error_detail().unwrap_or("no detail");
+        log::error!("rfvp_runtime_create failed: {error:?}: {detail}");
+        return Err(RFVP_STATUS_ENGINE);
+    }
+    let (width, height) = (core.config().virtual_width, core.config().virtual_height);
+    let handle = with_state(|state| {
+        state.runtimes.insert(HostRuntime {
+            core,
+            host,
+            pending_frame: None,
+            audio_commands: VecDeque::new(),
+            pending_audio_command: None,
+            audio_queue_overflowed: false,
+            events_enabled: false,
+            event_queue: VecDeque::new(),
+            event_sequence: 0,
+            event_queue_overflowed: false,
+            width,
+            height,
+            exit_requested: false,
+            active_frame: None,
+        })
+    });
+    Ok(handle.raw())
 }
 
 pub unsafe extern "C" fn rfvp_runtime_destroy(runtime: u64) {

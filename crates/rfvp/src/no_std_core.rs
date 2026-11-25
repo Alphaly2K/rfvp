@@ -127,6 +127,10 @@ pub struct RfvpCore {
     /// Directory where save slots (`rfvp_sNNN.bin`) and `rfvp_global.bin` live.
     /// Set by windowless hosts before `boot`; `None` keeps the engine default.
     save_dir: Option<std::path::PathBuf>,
+    #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+    host_assets: Option<std::sync::Arc<dyn crate::host_api::RfvpAssetSource>>,
+    #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+    host_saves: Option<std::sync::Arc<dyn crate::host_api::RfvpSaveStore>>,
 }
 
 impl RfvpCore {
@@ -147,6 +151,10 @@ impl RfvpCore {
             last_error: None,
             last_error_detail: None,
             save_dir: None,
+            #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+            host_assets: None,
+            #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+            host_saves: None,
         }
     }
 
@@ -194,6 +202,16 @@ impl RfvpCore {
         if let Some(dir) = &self.save_dir {
             self.game_data.save_manager.set_save_dir(Some(dir.clone()));
         }
+    }
+
+    #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+    pub(crate) fn set_host_io(
+        &mut self,
+        assets: std::sync::Arc<dyn crate::host_api::RfvpAssetSource>,
+        saves: std::sync::Arc<dyn crate::host_api::RfvpSaveStore>,
+    ) {
+        self.host_assets = Some(assets);
+        self.host_saves = Some(saves);
     }
 
     pub fn save_dir(&self) -> Option<&std::path::PathBuf> {
@@ -410,6 +428,10 @@ impl RfvpCore {
         );
 
         let mut vfs = build_host_vfs(host, boot)?;
+        #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+        if let Some(assets) = &self.host_assets {
+            vfs.set_asset_source(assets.clone());
+        }
         #[cfg(not(feature = "old_school"))]
         vfs.add_loose_file(&hcb.path, hcb.bytes.clone());
 
@@ -444,6 +466,25 @@ impl RfvpCore {
         self.game_data = game_data;
         self.vm_runner = Some(vm_runner);
         self.parser = Some(parser);
+
+        #[cfg(all(feature = "host-runtime", not(feature = "no_std")))]
+        if let Some(store) = &self.host_saves {
+            self.game_data.save_manager.set_store(store.clone());
+            let loaded = match store.read("rfvp_global.bin") {
+                Ok(bytes) => crate::subsystem::global_savedata::apply_global_savedata_v1(
+                    &mut self.game_data,
+                    &bytes,
+                ),
+                Err(RfvpError::NotFound) => Ok(false),
+                Err(error) => Err(error.into()),
+            };
+            if let Err(error) = loaded {
+                host.log(
+                    RfvpLogLevel::Warn,
+                    &format!("failed to load global savedata: {error}"),
+                );
+            }
+        }
 
         // Apply the host-provided save directory and load persistent global savedata
         // (flags, read-text bitmap, volatile globals) the way the windowed app does.
@@ -588,15 +629,27 @@ impl RfvpCore {
     /// when the runtime exits or is destroyed.
     #[cfg(not(feature = "no_std"))]
     pub fn flush_global_savedata(&mut self) {
+        #[cfg(feature = "host-runtime")]
+        if let Some(store) = &self.host_saves {
+            let result =
+                crate::subsystem::global_savedata::encode_global_savedata_v1(&self.game_data)
+                    .and_then(|bytes| Ok(store.write("rfvp_global.bin", &bytes)?));
+            if let Err(error) = result {
+                log::error!("failed to save global savedata: {error}");
+            }
+            return;
+        }
         let Some(dir) = self.save_dir.clone() else {
             return;
         };
         let path = crate::subsystem::global_savedata::global_savedata_path_in(&dir);
-        if let Err(err) = crate::subsystem::global_savedata::save_global_savedata_v1_to(
-            &self.game_data,
-            &path,
-        ) {
-            log::error!("failed to save global savedata to {}: {err:?}", path.display());
+        if let Err(err) =
+            crate::subsystem::global_savedata::save_global_savedata_v1_to(&self.game_data, &path)
+        {
+            log::error!(
+                "failed to save global savedata to {}: {err:?}",
+                path.display()
+            );
         }
     }
 

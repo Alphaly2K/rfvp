@@ -355,6 +355,8 @@ pub struct SaveManager {
     /// Per-instance save directory override. `None` falls back to the process-global
     /// `app_base_path()/save` (see `default_save_dir`).
     save_dir: Option<PathBuf>,
+    #[cfg(feature = "host-runtime")]
+    store: Option<std::sync::Arc<dyn crate::host_api::RfvpSaveStore>>,
 }
 
 impl Default for SaveManager {
@@ -382,6 +384,8 @@ impl SaveManager {
             need_save_prepare: false,
             local_saved_bytes: None,
             save_dir: None,
+            #[cfg(feature = "host-runtime")]
+            store: None,
         }
     }
 
@@ -389,6 +393,54 @@ impl SaveManager {
     ///
     /// Windowless host runtimes call this with the ABI-provided save root so each
     /// runtime persists to its own directory instead of the process-global base path.
+    #[cfg(feature = "host-runtime")]
+    pub(crate) fn set_store(&mut self, store: std::sync::Arc<dyn crate::host_api::RfvpSaveStore>) {
+        self.store = Some(store);
+    }
+
+    #[cfg(feature = "host-runtime")]
+    fn slot_keys(slot: u32) -> [String; 3] {
+        [
+            format!("rfvp_s{slot:03}.bin"),
+            format!("s{slot:03}.bin"),
+            format!("s{slot}.bin"),
+        ]
+    }
+
+    #[cfg(feature = "host-runtime")]
+    fn host_slot(&self, slot: u32) -> crate::host_api::RfvpResult<Vec<u8>> {
+        use crate::host_api::RfvpError;
+        let store = self.store.as_ref().ok_or(RfvpError::Unsupported)?;
+        for key in Self::slot_keys(slot) {
+            match store.read(&key) {
+                Ok(bytes) => return Ok(bytes),
+                Err(RfvpError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(RfvpError::NotFound)
+    }
+
+    pub(crate) fn read_slot_bytes(&self, slot: u32) -> Result<Vec<u8>> {
+        #[cfg(feature = "host-runtime")]
+        if self.store.is_some() {
+            return Ok(self.host_slot(slot)?);
+        }
+        Ok(std::fs::read(self.resolve_save_path_for_read(slot))?)
+    }
+
+    fn write_slot_bytes(&self, slot: u32, bytes: &[u8]) -> Result<()> {
+        #[cfg(feature = "host-runtime")]
+        if let Some(store) = &self.store {
+            return Ok(store.write(&format!("rfvp_s{slot:03}.bin"), bytes)?);
+        }
+        let path = self.get_save_path(slot);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(std::fs::write(path, bytes)?)
+    }
+
     pub fn set_save_dir(&mut self, dir: Option<PathBuf>) {
         self.save_dir = dir;
     }
@@ -523,6 +575,10 @@ impl SaveManager {
         }
         #[cfg(not(target_os = "uefi"))]
         {
+            #[cfg(feature = "host-runtime")]
+            if self.store.is_some() {
+                return self.host_slot(slot).is_ok();
+            }
             self.get_save_path(slot).exists()
         }
     }
@@ -643,11 +699,33 @@ impl SaveManager {
         }
 
         #[cfg(not(target_os = "uefi"))]
-        SaveItem::read_thumb_texture_from_file_in(&self.save_dir(), slot, width, height)
+        {
+            #[cfg(feature = "host-runtime")]
+            if self.store.is_some() {
+                return SaveItem::read_thumb_texture_from_mem(
+                    &self.read_slot_bytes(slot)?,
+                    width,
+                    height,
+                );
+            }
+            SaveItem::read_thumb_texture_from_file_in(&self.save_dir(), slot, width, height)
+        }
     }
 
     pub fn delete_savedata(&mut self, slot: u32) {
         if slot >= 1000 {
+            return;
+        }
+        #[cfg(feature = "host-runtime")]
+        if let Some(store) = &self.store {
+            for key in Self::slot_keys(slot) {
+                if let Err(error) = store.remove(&key) {
+                    if error != crate::host_api::RfvpError::NotFound {
+                        log::warn!("delete save slot {slot}: {error}");
+                    }
+                }
+            }
+            self.slots[slot as usize] = None;
             return;
         }
         self.slots[slot as usize] = None;
@@ -671,6 +749,21 @@ impl SaveManager {
 
         #[cfg(not(target_os = "uefi"))]
         {
+            if dst >= 1000 {
+                return Ok(());
+            }
+            #[cfg(feature = "host-runtime")]
+            if self.store.is_some() {
+                match self.host_slot(src) {
+                    Ok(bytes) => {
+                        self.write_slot_bytes(dst, &bytes)?;
+                        self.slots[dst as usize] = self.slots.get(src as usize).cloned().flatten();
+                    }
+                    Err(crate::host_api::RfvpError::NotFound) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                return Ok(());
+            }
             if let Some(save_item) = self.slots.get(src as usize) {
                 if let Some(save_item) = save_item {
                     self.slots[dst as usize] = Some(save_item.clone());
@@ -703,6 +796,33 @@ impl SaveManager {
                 *slot = None;
             }
 
+            #[cfg(feature = "host-runtime")]
+            if let Some(store) = &self.store {
+                let mut found = [false; 1000];
+                for key in store.list()? {
+                    let Some(stem) = key.strip_suffix(".bin") else {
+                        continue;
+                    };
+                    let Some(slot) = stem
+                        .strip_prefix("rfvp_s")
+                        .or_else(|| stem.strip_prefix('s'))
+                        .and_then(|slot| slot.parse::<usize>().ok())
+                    else {
+                        continue;
+                    };
+                    if slot < found.len() {
+                        found[slot] = true;
+                    }
+                }
+                for (slot, present) in found.into_iter().enumerate() {
+                    if present {
+                        if let Err(error) = self.load_savedata(slot as u32, nls) {
+                            log::warn!("refresh save slot {slot}: {error}");
+                        }
+                    }
+                }
+                return Ok(());
+            }
             let dir = self.save_dir();
             if !dir.exists() {
                 return Ok(());
@@ -778,6 +898,17 @@ impl SaveManager {
 
         #[cfg(not(target_os = "uefi"))]
         {
+            #[cfg(feature = "host-runtime")]
+            if self.store.is_some() {
+                if slot < 1000 {
+                    self.slots[slot as usize] = match self.host_slot(slot) {
+                        Ok(bytes) => Some(SaveItem::load_from_mem(&bytes, nls)?),
+                        Err(crate::host_api::RfvpError::NotFound) => None,
+                        Err(error) => return Err(error.into()),
+                    };
+                }
+                return Ok(());
+            }
             let path = self.resolve_save_path_for_read(slot);
 
             // Missing save slots are not fatal for callers that enumerate all slots.
@@ -904,11 +1035,7 @@ impl SaveManager {
                 return Ok(false);
             };
 
-            let path = self.get_save_path(self.current_save_slot);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&path, bytes)?;
+            self.write_slot_bytes(self.current_save_slot, bytes)?;
 
             // Refresh slot cache.
             if self.current_save_slot < 1000 {
@@ -963,11 +1090,7 @@ impl SaveManager {
             if let Some(snap) = state {
                 crate::subsystem::save_state::append_state_chunk_v1(&mut bytes, snap)?;
             }
-            let path = self.get_save_path(self.current_save_slot);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&path, &bytes)?;
+            self.write_slot_bytes(self.current_save_slot, &bytes)?;
 
             // Refresh slot cache.
             if self.current_save_slot < 1000 {
@@ -1032,8 +1155,7 @@ impl SaveManager {
 
         #[cfg(not(target_os = "uefi"))]
         {
-            let path = self.resolve_save_path_for_read(slot);
-            let bytes = std::fs::read(&path)?;
+            let bytes = self.read_slot_bytes(slot)?;
             self.load_slot_into_current_from_bytes(slot, nls, &bytes)
         }
     }

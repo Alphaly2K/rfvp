@@ -114,3 +114,55 @@ impl RfvpAssetPath {
         &self.inner
     }
 }
+
+/// A seekable file retained by the runtime or its media consumers.
+#[cfg(feature = "host-runtime")]
+pub type RfvpAssetFile = alloc::boxed::Box<dyn RfvpFile + Send>;
+
+#[cfg(feature = "host-runtime")]
+impl RfvpFile for RfvpAssetFile {
+    fn len(&mut self) -> RfvpResult<u64> {
+        (**self).len()
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> RfvpResult<usize> {
+        (**self).read_at(offset, buf)
+    }
+}
+
+/// Read-only project namespace. Paths use forward slashes and are relative to
+/// the project. Enumeration yields paths accepted by `open`.
+#[cfg(feature = "host-runtime")]
+pub trait RfvpAssetSource: Send + Sync {
+    fn open(&self, path: &str) -> RfvpResult<RfvpAssetFile>;
+    fn metadata(&self, path: &str) -> RfvpResult<RfvpFileInfo>;
+    fn enumerate(
+        &self,
+        root: &str,
+        extension_without_dot: &str,
+        visitor: &mut dyn FnMut(&str, RfvpFileInfo) -> RfvpResult<()>,
+    ) -> RfvpResult<()>;
+}
+
+/// Storage for engine-owned save blobs. Keys are single file names. Return
+/// `NotFound` for missing reads. Writes replace a key atomically.
+#[cfg(feature = "host-runtime")]
+pub trait RfvpSaveStore: Send + Sync {
+    fn read(&self, key: &str) -> RfvpResult<Vec<u8>>;
+    fn write(&self, key: &str, bytes: &[u8]) -> RfvpResult<()>;
+    fn remove(&self, key: &str) -> RfvpResult<()>;
+    fn list(&self) -> RfvpResult<Vec<String>>;
+}
+
+#[cfg(feature = "host-runtime")]
+impl core::fmt::Debug for dyn RfvpAssetSource {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RfvpAssetSource")
+    }
+}
+
+#[cfg(feature = "host-runtime")]
+impl core::fmt::Debug for dyn RfvpSaveStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RfvpSaveStore")
+    }
+}

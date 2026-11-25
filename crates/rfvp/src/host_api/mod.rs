@@ -14,6 +14,8 @@ pub use audio::{
 pub use clock::RfvpClock;
 pub use error::{RfvpError, RfvpResult};
 pub use event::{InputModifiers, KeyCode, PointerButton, RfvpEvent};
+#[cfg(feature = "host-runtime")]
+pub use fs::{RfvpAssetFile, RfvpAssetSource, RfvpSaveStore};
 pub use fs::{RfvpAssetPath, RfvpFile, RfvpFileInfo, RfvpFileKind, RfvpFileSystem};
 #[cfg(any(feature = "no_std", feature = "host-runtime"))]
 pub use host::{FatalErrorCallback, FatalErrorCode, PlatformCallbacks};
