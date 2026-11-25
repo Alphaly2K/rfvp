@@ -58,6 +58,7 @@ impl Default for RfvpCoreConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RfvpBootConfig<'a> {
+    /// The host enumerates packs using openable paths relative to this root.
     pub asset_root: &'a str,
     pub hcb_extension: &'a str,
     pub max_hcb_bytes: usize,
@@ -1006,7 +1007,10 @@ struct LoadedHcb {
     info: RfvpFileInfo,
 }
 
-fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpResult<Vfs> {
+fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpResult<Vfs>
+where
+    <<H as RfvpHost>::FileSystem as RfvpFileSystem>::File: 'static,
+{
     let mut vfs = Vfs::new(boot.nls).map_err(|_| RfvpError::InvalidData)?;
     #[cfg(feature = "old_school")]
     {
@@ -1020,11 +1024,10 @@ fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpRe
         let mut packs = Vec::new();
         {
             let visitor = &mut |path: &str, info: RfvpFileInfo| -> RfvpResult<()> {
-                if info.kind == crate::host_api::RfvpFileKind::File {
-                    let name = path.rsplit('/').next().unwrap_or(path);
-                    if path.contains('/') || name.starts_with("._") {
-                        return Ok(());
-                    }
+                if info.kind == crate::host_api::RfvpFileKind::File
+                    && !path.contains('/')
+                    && !path.starts_with("._")
+                {
                     packs.push(path.to_string());
                 }
                 Ok(())
@@ -1033,14 +1036,15 @@ fn build_host_vfs<H: RfvpHost>(host: &mut H, boot: RfvpBootConfig<'_>) -> RfvpRe
                 .enumerate_by_extension(boot.asset_root, "bin", visitor)?;
         }
         for path in packs {
-            let folder = path
-                .rsplit('/')
-                .next()
-                .unwrap_or(path.as_str())
-                .strip_suffix(".bin")
-                .unwrap_or(path.as_str());
-            let pack_path = std::path::Path::new(boot.asset_root).join(&path);
-            if let Err(err) = vfs.add_pack_file(pack_path, folder) {
+            #[cfg(feature = "host-runtime")]
+            let result = host
+                .fs()
+                .open(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|file| vfs.add_host_pack(&path, &path, file));
+            #[cfg(not(feature = "host-runtime"))]
+            let result = vfs.add_pack_file(std::path::Path::new(boot.asset_root).join(&path), &path);
+            if let Err(err) = result {
                 host.log(
                     RfvpLogLevel::Warn,
                     &format!("failed to parse host pack {path}: {err}"),

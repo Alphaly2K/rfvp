@@ -605,8 +605,12 @@ impl RfvpFileSystem for HostFileSystem {
         extension_without_dot: &str,
         visitor: &mut dyn FnMut(&str, RfvpFileInfo) -> RfvpResult<()>,
     ) -> RfvpResult<()> {
-        let root = self.resolve(root)?;
-        let mut pending = vec![root.clone()];
+        let root = if Path::new(root) == self.root {
+            self.root.clone()
+        } else {
+            self.resolve(root)?
+        };
+        let mut pending = vec![root];
         while let Some(dir) = pending.pop() {
             for entry in fs::read_dir(&dir).map_err(|_| RfvpError::Io)? {
                 let entry = entry.map_err(|_| RfvpError::Io)?;

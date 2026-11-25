@@ -58,6 +58,10 @@ pub trait RfvpFile {
 }
 
 pub trait RfvpFileSystem {
+    /// A Host runtime may retain a pack file and read it from an audio worker.
+    #[cfg(feature = "host-runtime")]
+    type File: RfvpFile + Send;
+    #[cfg(not(feature = "host-runtime"))]
     type File: RfvpFile;
 
     fn open(&mut self, path: &str) -> RfvpResult<Self::File>;
@@ -80,6 +84,7 @@ pub trait RfvpFileSystem {
         self.metadata(path).is_ok()
     }
 
+    /// Pass paths that can be opened directly with [`Self::open`].
     fn enumerate_by_extension(
         &mut self,
         _root: &str,

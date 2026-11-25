@@ -47,3 +47,5 @@ impl fmt::Display for RfvpError {
         f.write_str(msg)
     }
 }
+
+impl core::error::Error for RfvpError {}
