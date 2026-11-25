@@ -85,15 +85,18 @@ pub fn timer_get(game_data: &GameData, id: &Variant, default_value: &Variant) ->
 }
 
 pub fn timer_suspend(game_data: &mut GameData, on: &Variant) -> Result<Variant> {
-    // IDA (original engine): boolean args are evaluated as (Type != 0).
-    game_data.timer_manager.set_suspend(!on.canbe_true());
+    // The original stores (Type != True): only True resumes the timers, anything else
+    // (nil, ints, ...) suspends them.
+    game_data
+        .timer_manager
+        .set_suspend(!matches!(on, Variant::True));
 
     Ok(Variant::Nil)
 }
 
 pub struct TimerSet;
 impl Syscaller for TimerSet {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         if args.len() != 2 {
             log::error!("timer_set: invalid number of arguments");
             return Ok(Variant::Nil);
@@ -108,7 +111,7 @@ unsafe impl Sync for TimerSet {}
 
 pub struct TimerGet;
 impl Syscaller for TimerGet {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         if args.len() != 2 {
             log::error!("timer_get: invalid number of arguments");
             return Ok(Variant::Nil);
@@ -123,7 +126,7 @@ unsafe impl Sync for TimerGet {}
 
 pub struct TimerSuspend;
 impl Syscaller for TimerSuspend {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         if args.len() != 1 {
             log::error!("timer_suspend: invalid number of arguments");
             return Ok(Variant::Nil);

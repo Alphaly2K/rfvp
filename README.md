@@ -1,12 +1,5 @@
 # rfvp: A Non-Official Rust cross-platform implementation of the FVP engine and IDE.
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.zh-Hant.md">繁體中文</a> |
-  <a href="README.zh-Hans.md">简体中文</a>
-</p>
-
 <img src="images/flake.png" width="20%">
 
 ### What is rfvp?
@@ -15,6 +8,28 @@
 ![legacy](./images/legacy.png)
 * You can even use rfvp as an **Operation System**! Turn on your computer and boot with the UEFI program.
 ![uefi](./images/uefi.png)
+
+### Console support
+
+These are game frames captured from RFVP running in emulators.
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="images/platforms/ps1.png" alt="RFVP PS1 title screen in DuckStation" width="100%"><br><b>PlayStation</b><br><sub>DuckStation</sub></td>
+    <td align="center" width="33%"><img src="images/platforms/ps2.png" alt="RFVP PS2 dialogue scene in PCSX2" width="100%"><br><b>PlayStation 2</b><br><sub>PCSX2</sub></td>
+    <td align="center" width="33%"><img src="images/platforms/psp.png" alt="RFVP PSP title screen in PPSSPP" width="100%"><br><b>PSP</b><br><sub>PPSSPP</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="images/platforms/3ds.png" alt="RFVP 3DS title screen in Azahar" width="100%"><br><b>Nintendo 3DS</b><br><sub>Azahar</sub></td>
+    <td align="center" width="33%"><img src="images/platforms/ps3.png" alt="RFVP PS3 dialogue scene in RPCS3" width="100%"><br><b>PlayStation 3</b><br><sub>RPCS3</sub></td>
+    <td align="center" width="33%"><img src="images/platforms/switch.png" alt="RFVP Switch title screen in Ryujinx" width="100%"><br><b>Nintendo Switch</b><br><sub>Ryujinx</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="images/platforms/vita.png" alt="RFVP PS Vita startup screen in Vita3K" width="100%"><br><b>PS Vita</b><br><sub>Vita3K</sub></td>
+    <td align="center" width="33%"><img src="images/platforms/wii.png" alt="RFVP Wii title screen in Dolphin" width="100%"><br><b>Wii</b><br><sub>Dolphin</sub></td>
+    <td align="center" width="33%"><img src="images/platforms/wiiu.png" alt="RFVP Wii U dialogue scene in Cemu" width="100%"><br><b>Wii U</b><br><sub>Cemu; TV framebuffer.</sub></td>
+  </tr>
+</table>
 
 ### rfvp debug HUD
 * Enable it with F2 hotkey (Fn + F2 on MacOS)
@@ -35,6 +50,22 @@ If you want to run a translated game, currently we only support UTF-8 and GBK en
 * The translated strings are not stored in the `*.hcb` file.
 * The translated game encrypts the translated assets.
 * Any other ways that the translated game differs from the original game in terms of data structure and format.
+
+#### `config.toml` (console ports)
+Console ports without a launcher need a configuration file to pick the encoding or script. The console ports (PS Vita, Switch, PSP, PS2, PS3, 3DS, Wii, Wii U; not the PS1, which runs what `rfvp-psx-convert` built) read an optional `config.toml` from the **game directory** (the folder that holds the `*.hcb` and `*.bin` files). On PS Vita, the file browser can explicitly override the script and encoding; see `platform/vita/LAUNCHER.md`. Otherwise, what the file sets wins over the port's defaults (the first `*.hcb` found, ShiftJIS) and over a port's `nls.txt`:
+
+```toml
+[game]
+# The script to run, relative to the game directory. Without it, the first *.hcb found is used.
+hcb = "MemoriaGBK.hcb"
+# The script's encoding: "sjis" (the default), "gbk" or "utf8".
+nls = "gbk"
+```
+
+* Every key is optional, and without the file the game starts as before.
+* Only `[section]` headers, `key = value` lines and `#` comments are read; strings may be quoted (`"..."` / `'...'`) or bare. Unknown sections and keys are ignored.
+* The file must be UTF-8. A mistake in it (an unknown `nls`, a missing `hcb` file) stops the boot and is written to the port's `last_error.txt`, with the line number.
+* A different `hcb` keeps its own saves: saves are kept per script name.
 
 ### HOW TO BUILD
 * macOS Bundle: [setsumei/HOW-TO-BUILD.macos-bundle.md](setsumei/HOW-TO-BUILD.macos-bundle.md)
@@ -63,29 +94,58 @@ The Rust API documentation for this project is available here:
 
 - [RFVP Rust API Docs](https://xmoezzz.github.io/rfvp/)
 
+**A**rchitecture **D**ecision **R**ecords (ADR) are available here:
+- [RFVP ADRs](/docs/adr/README.md)
+
+### Directives for AI & Coding Agents
+
+When any LLM or autonomous coding agent inspects, refactors, or contributes to this codebase, it **MUST prioritize and strictly adhere to the decisions recorded in [docs/adr/](docs/adr/README.md)**:
+
+1. **AI Contribution & Attribution Standards ([ADR-0006](docs/adr/0006-ai-assisted-contributions.md)):**
+   - Code generation and complex refactoring should ideally use frontier reasoning models at or exceeding **Claude Opus 5.5** or **GPT-6 Astra** capability. Contributions assisted by lower-tier models require mandatory, meticulous human inspection.
+   - **Never** attribute AI models or bots as git commit authors or co-authors (`Co-authored-by:`). Git authorship belongs exclusively to the responsible human contributor.
+
+2. **Console Support Tiering ([ADR-0007](docs/adr/0007-console-platform-support-tiers.md)):**
+   - **PlayStation Vita (`psv`)** and **Nintendo Switch (`switch`)** are designated as the primary mainstream console targets.
+   - The **PlayStation 1 (`ps1`)** port is strictly an **experimental prototype**. Never compromise, constrain, or convolute core engine architecture, memory semantics, or host abstractions to accommodate PS1 hardware limitations (e.g. 2 MB RAM or missing FPU).
+
+3. **Translation Workflow & Offline Repacking ([ADR-0008](docs/adr/0008-translation-patching-offline-repack.md)):**
+   - Do **not** implement engine-level runtime translation probing, dynamic string hooks, or loose-asset overlay injection in the core engine.
+   - Translation patches must be prepared offline by packaging scripts back into `.hcb` (and `.bin`) files. Extraction and repacking scripts belong in the [`translation/`](translation/README.md) directory to eliminate runtime filesystem probing overhead and emulator noise on consoles.
+
+4. **Engine Compatibility & Invariant Fidelity ([ADRs 0001–0005](docs/adr/README.md)):**
+   - Adhere strictly to verified reverse-engineering findings and do not "fix" intentional divergences or documented original defects listed in ADR-0005 without concrete game-script evidence.
+
+
+
 
 ### Supported Platforms and Packaging Types
-| Platform | Packaging Type(s) Supported                                | Launcher | Standalone Executable | Architectures                       |
-| -------- | ---------------------------------------------------------- | -------: | --------------------: | ----------------------------------- |
-| macOS    | App Bundle (`.app`) and DMG (`.dmg`)                          |      Yes |                    No | Universal       |
-| iOS      | Unsigned IPA (`.ipa`, AltStore) |      Yes |                    No | arm64   |
-| Android  | APK (`.apk`)                                               |      Yes |                    No | arm64-v8a, x86_64                   |
-| Windows  | Standalone EXE                                             |       No |                   Yes | x86_64, arm64                       |
-| Linux    | Standalone                                                 |       No |                   Yes | x86_64, aarch64 |
-| WASM     | Bundle                                            |      Yes |                    No | **Any architecture** (via WASI)          |
-| FreeBSD  | Standalone                                                 |       No |                   Yes | x86_64 |
-| UEFI     | Standalone EFI (`.efi`)                                             |       No |                   Yes | x86_64, arm64                       |
-| PS Vita  | Standalone (`.eboot`)                                               |       No |                   Yes | armv7                   |
-| PSP      | Standalone (`.eboot`)                                               |       No |                   Yes | MIPS R4000                 |
-| PS3      | Static Library (`.a`)                                               |       No |                   Yes | PPC64BE                   |
-| PS2      | Static Library (`.a`)                                               |       No |                   Yes | MIPS R5900                   |
-| Switch    | Standalone (`.nro`)                                               |       No |                   Yes | arm64-v8a                   |
-| Wii U      | Standalone (`.rpx`)                                               |       No |                   Yes | PowerPC 750CL                 |
-| Wii      | Standalone (`.dol`)                                               |       No |                   Yes | PowerPC 750CL                  |
-| 3DS      | Standalone (`.3dsx`)                                               |       No |                   Yes | arm6k                    |
+| Platform | Packaging Type(s) Supported                                | Launcher | Standalone Executable | Architectures                       | Status |
+| -------- | ---------------------------------------------------------- | -------: | --------------------: | ----------------------------------- | -------- |
+| macOS    | App Bundle (`.app`) and DMG (`.dmg`)                          |      Yes |                    No | Universal       | Supported |
+| iOS      | Unsigned IPA (`.ipa`, AltStore) |      Yes |                    No | arm64   | Supported |
+| Android  | APK (`.apk`)                                               |      Yes |                    No | arm64-v8a, x86_64                   | Supported |
+| Windows  | Standalone EXE                                             |       No |                   Yes | x86_64, arm64                       | Supported |
+| Linux    | Standalone                                                 |       No |                   Yes | x86_64, aarch64 | Supported |
+| WASM     | Bundle                                            |      Yes |                    No | **Any architecture** (via WASI)          | Supported |
+| FreeBSD  | Standalone                                                 |       No |                   Yes | x86_64 | Manual build |
+| UEFI     | Standalone EFI (`.efi`)                                             |       No |                   Yes | x86_64, arm64                       | Supported |
+| PS Vita  | Standalone (`.vpk` / `.eboot`)                                      |      Yes |                   Yes | armv7                   | Experimental |
+| PSP      | Standalone (`.eboot`)                                               |       No |                   Yes | MIPS R4000                 | Skeleton |
+| PS3      | Static Library (`.a`)                                               |       No |                   Yes | PPC64BE                   | Skeleton |
+| PS2      | Static Library (`.a`)                                               |       No |                   Yes | MIPS R5900                   | Skeleton |
+| Switch    | Standalone (`.nro`)                                               |       No |                   Yes | arm64-v8a                   | Experimental |
+| Wii U      | Standalone (`.rpx`)                                               |       No |                   Yes | PowerPC 750CL                 | Skeleton |
+| Wii      | Standalone (`.dol`)                                               |       No |                   Yes | PowerPC 750CL                  | Skeleton |
+| 3DS      | Standalone (`.3dsx`)                                               |       No |                   Yes | arm6k                    | Skeleton |
 
 
 * Since this is a Rust project, it should be possible to build for many other platforms as well.
+
+**Status**
+* **Supported**: built by CI on every push.
+* **Experimental** (PS Vita, Switch): `rfvp-psv` and `rfvp-horizon` are the real console targets. They build on every change that touches them, and the core they run boots, plays and saves a real game in a desktop test host, with hardware verification scoped in each platform README. See `platform/switch/README.md` and `platform/vita/README.md`.
+* **Skeleton** (PSP, PS3, PS2, Wii U, Wii, 3DS): host crates that exist so the `no_std` core surface has a place to plug in. They are untested and not built by CI; expect to rebuild them at a lower resolution before they are usable.
 
 ### As Library
 * Normal Mode: Provide full capabilities of the engine, including using `winit` for event handling and `wgpu` for rendering. This mode is suitable for modern platforms.
@@ -100,6 +160,13 @@ Ensuring 100% compatibility requires testing against all related games. If you f
 * Also see [setsumei/COMPATIBILITY.md](setsumei/COMPATIBILITY.md) for details. Some features and behaviors may differ from the original engine.
 
 ### Disclaimer
+<p align="center">
+  <img src="icon/crysirror.svg" width="160" height="160" alt="CrySirror logo">
+</p>
+
+- This project belongs to `CrySirror` [project](https://github.com/xmoezzz/CrySirror), which is a unified engine backend for visual novels and 3D games. 
+- Bug fixes and improvements for the FVP engine is acceptable in this repository. 
+- If you want to support a new platform (e.g. game console), please create an issue or pull request in the `CrySirror` repository instead of this one. 
 - This project is a standalone, reverse-engineered reimplementation of the original game engine logic. All source code has been written from scratch based on research and observation of the target software's behavior. This repository contains no original source code from the original developers.
 - You must own a legitimate copy of the original game to use this engine. You are strictly prohibited from distributing, sharing, or providing download links for any original game data, assets, or bundled game executables.
 - The original game company and rights holders retain all ownership of their intellectual property. As a courtesy, the original company is free to utilize the code within this repository for any purpose, including commercial use, without prior permission.

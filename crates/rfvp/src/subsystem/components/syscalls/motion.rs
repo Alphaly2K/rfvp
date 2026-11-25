@@ -33,6 +33,12 @@ fn int_or_default(v: &Variant, default: i32) -> i32 {
     }
 }
 
+// WhiteEternity.exe.i64: MotionAlpha 0x43A8B0, MotionMove 0x43ABD0,
+// MotionMoveR 0x43AE50, MotionMoveS2 0x43AF70, MotionMoveZ 0x43AD30,
+// V3DMotion 0x43CFE0. All six require duration tag 2 (Int) and a value
+// in 1..=300000 before calling the motion helper. Nil skips the operation;
+// defaults on other arguments do not make duration optional or clamped.
+
 pub fn motion_alpha(
     game_data: &mut GameData,
     id: &Variant,
@@ -172,32 +178,32 @@ pub fn motion_move(
         return Ok(Variant::Nil);
     }
 
-    let mut src_x = match src_x {
+    let src_x = match src_x {
         Variant::Int(x) => *x as i16,
         _ => game_data.motion_manager.prim_manager.get_prim(id).get_x(),
     };
 
-    let mut src_y = match src_y {
+    let src_y = match src_y {
         Variant::Int(y) => *y as i16,
         _ => game_data.motion_manager.prim_manager.get_prim(id).get_y(),
     };
 
-    let mut dst_x = match dst_x {
+    let dst_x = match dst_x {
         Variant::Int(x) => *x as i16,
         _ => game_data.motion_manager.prim_manager.get_prim(id).get_x(),
     };
 
-    let mut dst_y = match dst_y {
+    let dst_y = match dst_y {
         Variant::Int(y) => *y as i16,
         _ => game_data.motion_manager.prim_manager.get_prim(id).get_y(),
     };
     #[cfg(feature = "old_school")]
-    {
-        src_x = scale_i16(game_data, src_x);
-        src_y = scale_i16(game_data, src_y);
-        dst_x = scale_i16(game_data, dst_x);
-        dst_y = scale_i16(game_data, dst_y);
-    }
+    let (src_x, src_y, dst_x, dst_y) = (
+        scale_i16(game_data, src_x),
+        scale_i16(game_data, src_y),
+        scale_i16(game_data, dst_x),
+        scale_i16(game_data, dst_y),
+    );
 
     let duration = match duration {
         Variant::Int(duration) => *duration,
@@ -865,7 +871,7 @@ pub fn v3d_set(game_data: &mut GameData, x: &Variant, y: &Variant, z: &Variant) 
 ///
 pub struct MotionAlpha;
 impl Syscaller for MotionAlpha {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
         let src_alpha = get_var!(args, 1);
         let dst_alpha = get_var!(args, 2);
@@ -887,7 +893,7 @@ unsafe impl Sync for MotionAlpha {}
 /// - The function has no return value
 pub struct MotionAlphaStop;
 impl Syscaller for MotionAlphaStop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_alpha_stop(game_data, id)
@@ -913,7 +919,7 @@ unsafe impl Sync for MotionAlphaStop {}
 ///
 pub struct MotionAlphaTest;
 impl Syscaller for MotionAlphaTest {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_alpha_test(game_data, id)
@@ -925,7 +931,7 @@ unsafe impl Sync for MotionAlphaTest {}
 
 pub struct MotionMove;
 impl Syscaller for MotionMove {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
         let src_x = get_var!(args, 1);
         let src_y = get_var!(args, 2);
@@ -946,7 +952,7 @@ unsafe impl Sync for MotionMove {}
 
 pub struct MotionMoveStop;
 impl Syscaller for MotionMoveStop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_stop(game_data, id)
@@ -958,7 +964,7 @@ unsafe impl Sync for MotionMoveStop {}
 
 pub struct MotionMoveTest;
 impl Syscaller for MotionMoveTest {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_test(game_data, id)
@@ -970,7 +976,7 @@ unsafe impl Sync for MotionMoveTest {}
 
 pub struct MotionMoveR;
 impl Syscaller for MotionMoveR {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
         let src_r = get_var!(args, 1);
         let dst_r = get_var!(args, 2);
@@ -987,7 +993,7 @@ unsafe impl Sync for MotionMoveR {}
 
 pub struct MotionMoveRStop;
 impl Syscaller for MotionMoveRStop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_r_stop(game_data, id)
@@ -999,7 +1005,7 @@ unsafe impl Sync for MotionMoveRStop {}
 
 pub struct MotionMoveRTest;
 impl Syscaller for MotionMoveRTest {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_r_test(game_data, id)
@@ -1011,7 +1017,7 @@ unsafe impl Sync for MotionMoveRTest {}
 
 pub struct MotionMoveS2;
 impl Syscaller for MotionMoveS2 {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
         let src_w_factor = get_var!(args, 1);
         let src_h_factor = get_var!(args, 2);
@@ -1040,7 +1046,7 @@ unsafe impl Sync for MotionMoveS2 {}
 
 pub struct MotionMoveS2Stop;
 impl Syscaller for MotionMoveS2Stop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_s2_stop(game_data, id)
@@ -1052,7 +1058,7 @@ unsafe impl Sync for MotionMoveS2Stop {}
 
 pub struct MotionMoveS2Test;
 impl Syscaller for MotionMoveS2Test {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_s2_test(game_data, id)
@@ -1064,7 +1070,7 @@ unsafe impl Sync for MotionMoveS2Test {}
 
 pub struct MotionMoveZ;
 impl Syscaller for MotionMoveZ {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
         let src_z = get_var!(args, 1);
         let dst_z = get_var!(args, 2);
@@ -1081,7 +1087,7 @@ unsafe impl Sync for MotionMoveZ {}
 
 pub struct MotionMoveZStop;
 impl Syscaller for MotionMoveZStop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_z_stop(game_data, id)
@@ -1093,7 +1099,7 @@ unsafe impl Sync for MotionMoveZStop {}
 
 pub struct MotionMoveZTest;
 impl Syscaller for MotionMoveZTest {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
 
         motion_move_z_test(game_data, id)
@@ -1105,7 +1111,7 @@ unsafe impl Sync for MotionMoveZTest {}
 
 pub struct MotionPause;
 impl Syscaller for MotionPause {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let id = get_var!(args, 0);
         let pause = get_var!(args, 1);
 
@@ -1118,7 +1124,7 @@ unsafe impl Sync for MotionPause {}
 
 pub struct V3DMotion;
 impl Syscaller for V3DMotion {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let dest_x = get_var!(args, 0);
         let dest_y = get_var!(args, 1);
         let dest_z = get_var!(args, 2);
@@ -1135,7 +1141,7 @@ unsafe impl Sync for V3DMotion {}
 
 pub struct V3DMotionPause;
 impl Syscaller for V3DMotionPause {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let pause = get_var!(args, 0);
 
         v3d_motion_pause(game_data, pause)
@@ -1147,7 +1153,7 @@ unsafe impl Sync for V3DMotionPause {}
 
 pub struct V3DMotionStop;
 impl Syscaller for V3DMotionStop {
-    fn call(&self, game_data: &mut GameData, _args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, _args: &[Variant]) -> Result<Variant> {
         v3d_motion_stop(game_data)
     }
 }
@@ -1157,7 +1163,7 @@ unsafe impl Sync for V3DMotionStop {}
 
 pub struct V3DMotionTest;
 impl Syscaller for V3DMotionTest {
-    fn call(&self, game_data: &mut GameData, _args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, _args: &[Variant]) -> Result<Variant> {
         v3d_motion_test(game_data)
     }
 }
@@ -1167,7 +1173,7 @@ unsafe impl Sync for V3DMotionTest {}
 
 pub struct V3DSet;
 impl Syscaller for V3DSet {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let x = get_var!(args, 0);
         let y = get_var!(args, 1);
         let z = get_var!(args, 2);
@@ -1183,7 +1189,7 @@ unsafe impl Sync for V3DSet {}
 /// IDA SYSCALL_SPECS: argc=4
 pub struct MotionAnim;
 impl Syscaller for MotionAnim {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let prim_id = get_var!(args, 0).as_int().unwrap_or(0) as u32;
         let sprt_prim_id = get_var!(args, 1).as_int().unwrap_or(0) as i32;
         let time = get_var!(args, 2).as_int().unwrap_or(0) as i32;
@@ -1212,7 +1218,7 @@ impl Syscaller for MotionAnim {
 /// IDA SYSCALL_SPECS: argc=1
 pub struct MotionAnimStop;
 impl Syscaller for MotionAnimStop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let prim_id = get_var!(args, 0).as_int().unwrap_or(0) as u32;
         let _ = game_data.motion_manager.stop_anim_motion(prim_id);
         Ok(Variant::Nil)
@@ -1223,7 +1229,7 @@ impl Syscaller for MotionAnimStop {
 /// IDA SYSCALL_SPECS: argc=1
 pub struct MotionAnimTest;
 impl Syscaller for MotionAnimTest {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         let prim_id = get_var!(args, 0).as_int().unwrap_or(0) as u32;
         Ok(if game_data.motion_manager.test_anim_motion(prim_id) {
             Variant::True

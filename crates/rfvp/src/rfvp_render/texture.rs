@@ -183,6 +183,12 @@ impl GpuTexture {
                 ],
             });
 
+        super::mem_stats::TEXTURES_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        super::mem_stats::add(
+            &super::mem_stats::TEXTURE_BYTES,
+            &super::mem_stats::TEXTURES,
+            w as u64 * h as u64 * 4,
+        );
         Self {
             texture,
             view,
@@ -209,23 +215,11 @@ impl GpuTexture {
             _ => std::borrow::Cow::Owned(img.to_rgba8().into_raw()),
         };
 
+        // Queue::write_texture has no COPY_BYTES_PER_ROW_ALIGNMENT requirement, so upload the
+        // tightly packed rows directly instead of building a padded full-size copy per update.
         let bytes_per_row = 4u32.saturating_mul(src_w);
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = ((bytes_per_row + align - 1) / align) * align;
-
-        let data: std::borrow::Cow<'_, [u8]> = if padded_bytes_per_row == bytes_per_row {
-            raw
-        } else {
-            // Pad each row to meet wgpu's alignment requirement.
-            let mut out = vec![0u8; (padded_bytes_per_row as usize) * (src_h as usize)];
-            for y in 0..(src_h as usize) {
-                let src_off = y * (bytes_per_row as usize);
-                let dst_off = y * (padded_bytes_per_row as usize);
-                out[dst_off..dst_off + (bytes_per_row as usize)]
-                    .copy_from_slice(&raw[src_off..src_off + (bytes_per_row as usize)]);
-            }
-            std::borrow::Cow::Owned(out)
-        };
+        super::mem_stats::TEXTURE_WRITES
+            .fetch_add(bytes_per_row as u64 * src_h as u64, std::sync::atomic::Ordering::Relaxed);
 
         resources.queue.write_texture(
             wgpu::ImageCopyTexture {
@@ -234,10 +228,10 @@ impl GpuTexture {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &data,
+            &raw,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(src_h),
             },
             wgpu::Extent3d {
@@ -260,5 +254,15 @@ impl GpuTexture {
 
     pub fn raw_view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+}
+
+impl Drop for GpuTexture {
+    fn drop(&mut self) {
+        super::mem_stats::sub(
+            &super::mem_stats::TEXTURE_BYTES,
+            &super::mem_stats::TEXTURES,
+            self.size.0 as u64 * self.size.1 as u64 * 4,
+        );
     }
 }

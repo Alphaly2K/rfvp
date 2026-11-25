@@ -11,6 +11,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+#[cfg(feature = "no_std")]
+use crate::path::Path;
 
 use super::gaiji_manager::GaijiManager;
 use crate::text_translation::{TextTranslationController, TextTranslationRequest};
@@ -704,6 +706,9 @@ pub struct FontEnumerator {
 
     system_fontface_id: i32,
     current_font_name: String,
+    // Host-provided "force this font for all rendering" override (Android/iOS hosts).
+    // Index into `fonts`; cleared on font re-scan to avoid dangling ids.
+    forced_font_id: Option<i32>,
 }
 
 #[cfg(not(feature = "no_std"))]
@@ -745,6 +750,7 @@ impl FontEnumerator {
             font_override: None,
             system_fontface_id: FONTFACE_MS_GOTHIC,
             current_font_name: "MS Gothic".to_string(),
+            forced_font_id: None,
         }
     }
 
@@ -783,13 +789,82 @@ impl FontEnumerator {
         }
     }
 
+    /// Load system CJK fallback fonts on demand.
+    ///
+    /// Used by host-driven platforms that toggle the fallback after engine
+    /// creation (e.g. the Android host calls this once from the host ABI).
+    /// No-op when the fallback is disabled or the scan already ran.
+    pub fn load_system_fallback_fonts(&mut self) {
+        if !self.system_fallback_enabled {
+            return;
+        }
+        self.init_system_fallback_fonts();
+    }
+
+    /// Append a font file at runtime (host-provided custom font).
+    ///
+    /// Returns the new font id (0-based index into the user font list), or
+    /// `None` when the file is missing/invalid/unsupported.
+    pub fn add_font_file(&mut self, path: &Path) -> Option<i32> {
+        match load_font_file(path) {
+            Ok(Some(loaded)) => {
+                log::info!(
+                    "Added custom font face '{}' from {} (id={})",
+                    loaded.name,
+                    path.display(),
+                    self.fonts.len()
+                );
+                self.fonts.push(loaded);
+                Some((self.fonts.len() - 1) as i32)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!("Failed to add font {}: {}", path.display(), e);
+                None
+            }
+        }
+    }
+
     pub fn clear_font_override(&mut self) {
         if self.font_override.take().is_some() {
             log::info!("Font override cleared");
         }
     }
 
+    /// Force a user font (by id) as the primary font for all rendering.
+    ///
+    /// While forced, scripts' `TextFontSet` requests and the built-in MS
+    /// faces are ignored in favor of this font; missing glyphs still fall
+    /// back to the remaining loaded fonts, system fallbacks and built-ins.
+    /// `None` (or an invalid id) restores the default behavior.
+    pub fn set_forced_font(&mut self, id: Option<i32>) {
+        self.forced_font_id = match id {
+            Some(idx) if idx >= 0 && (idx as usize) < self.fonts.len() => Some(idx),
+            _ => None,
+        };
+    }
+
+    pub fn forced_font_id(&self) -> Option<i32> {
+        self.forced_font_id
+    }
+
+    fn is_font_forced(&self) -> bool {
+        self.forced_font_id
+            .map(|idx| (idx as usize) < self.fonts.len())
+            .unwrap_or(false)
+    }
+
+    fn forced_font(&self) -> Option<Font> {
+        self.forced_font_id
+            .and_then(|idx| self.fonts.get(idx as usize))
+            .map(|loaded| loaded.font.clone())
+    }
+
     pub fn init_fontface(&mut self) -> Result<()> {
+        // Re-scanning rebuilds the user font list, so any previously forced id
+        // would dangle; hosts re-apply the forced font after re-initialization.
+        self.forced_font_id = None;
+
         let mut path = app_base_path().join("font");
         if !path.exists() {
             // Android/Linux file systems are case-sensitive; many games ship `FONT`/`Font`.
@@ -958,6 +1033,10 @@ impl FontEnumerator {
     /// - id < 0: original engine fixed fontface ids. These constants must not move.
     /// - id >= 0: enumerated user/private fonts, 0-based, matching TextFontCount/TextFontName loops.
     pub fn get_font(&self, id: i32) -> Font {
+        // Host-forced font takes precedence over every script/face request.
+        if let Some(forced) = self.forced_font() {
+            return forced;
+        }
         match id {
             FONTFACE_CURRENT => self.resolve_current_font(),
             FONTFACE_MS_GOTHIC => self.sys_ms_gothic.clone(),
@@ -977,20 +1056,19 @@ impl FontEnumerator {
     }
 
     fn get_font_fallback_set(&self, id: i32) -> FontFallbackSet {
-        // A host-forced override replaces the primary for every requested face;
-        // the rest of the fallback chain is unchanged so glyphs missing from
-        // the override still resolve.
-        let primary = self
-            .font_override
-            .as_ref()
-            .map(|override_font| override_font.font.clone())
-            .unwrap_or_else(|| self.get_font(id));
-        let prefer_game_cjk = match id {
-            FONTFACE_MS_GOTHIC | FONTFACE_MS_MINCHO | FONTFACE_MS_PGOTHIC | FONTFACE_MS_PMINCHO => {
-                true
+        let primary = self.font_override.as_ref().map(|font| font.font.clone()).unwrap_or_else(|| self.get_font(id));
+        let prefer_game_cjk = if self.font_override.is_some() || self.is_font_forced() {
+            // The forced font is already the primary; do not re-order CJK
+            // fallbacks around it.
+            false
+        } else {
+            match id {
+                FONTFACE_MS_GOTHIC | FONTFACE_MS_MINCHO | FONTFACE_MS_PGOTHIC | FONTFACE_MS_PMINCHO => {
+                    true
+                }
+                FONTFACE_CURRENT => !self.current_font_is_user_loaded(),
+                _ => false,
             }
-            FONTFACE_CURRENT => !self.current_font_is_user_loaded(),
-            _ => false,
         };
         let mut preferred_cjk = if prefer_game_cjk {
             Vec::with_capacity(self.fonts.len() + self.system_fallback_fonts.len())
@@ -1110,6 +1188,18 @@ impl FontEnumerator {
     }
 
     pub fn set_system_font_fallback_enabled(&mut self, _enabled: bool) {}
+
+    pub fn load_system_fallback_fonts(&mut self) {}
+
+    pub fn add_font_file(&mut self, _path: &Path) -> Option<i32> {
+        None
+    }
+
+    pub fn set_forced_font(&mut self, _id: Option<i32>) {}
+
+    pub fn forced_font_id(&self) -> Option<i32> {
+        None
+    }
 
     pub fn init_fontface(&mut self) -> Result<()> {
         if self.default_font.is_some() {
@@ -1369,11 +1459,19 @@ impl TextItem {
     }
 
     fn effective_render_scale(&self) -> f32 {
-        if self.render_scale.is_finite() && self.render_scale > 1.0 {
+        let scale = if self.render_scale.is_finite() && self.render_scale > 1.0 {
             self.render_scale
         } else {
-            1.0
+            return 1.0;
+        };
+        // HiDPI must never push a text surface past MAX_HIDPI_TEXT_SURFACE_DIM on either axis.
+        // Large script TextBuffs (scrolling logs, full-screen pages) would otherwise multiply into
+        // hundreds of MB across the CPU raster, reveal cache, GraphBuff copy and GPU texture.
+        let longest = self.w.max(self.h) as f32;
+        if longest <= 0.0 || longest * scale <= MAX_HIDPI_TEXT_SURFACE_DIM {
+            return scale;
         }
+        (MAX_HIDPI_TEXT_SURFACE_DIM / longest).clamp(1.0, scale)
     }
 
     fn raster_dimensions(&self) -> (u32, u32) {
@@ -1471,26 +1569,50 @@ impl TextItem {
     }
 
     pub fn set_text_size1(&mut self, size: u8) {
+        // The PlayStation's font has one size (see font.rs).
+        #[cfg(feature = "psx")]
+        let size = crate::font::psx_cell() as u8;
         self.text_size1 = size;
         self.mark_layout_dirty();
     }
 
     pub fn set_text_size2(&mut self, size: u8) {
+        // The PlayStation's font has one size (see font.rs).
+        #[cfg(feature = "psx")]
+        let size = crate::font::psx_cell() as u8;
         self.text_size2 = size;
         self.mark_layout_dirty();
     }
 
     pub fn set_outline_size1(&mut self, outline: u8) {
+        // No outlines or shadows on the PlayStation: its text is plain bitmap glyphs.
+        #[cfg(feature = "psx")]
+        let outline = {
+            let _ = outline;
+            0
+        };
         self.outline_size1 = outline;
         self.mark_layout_dirty();
     }
 
     pub fn set_outline_size2(&mut self, outline: u8) {
+        // No outlines or shadows on the PlayStation: its text is plain bitmap glyphs.
+        #[cfg(feature = "psx")]
+        let outline = {
+            let _ = outline;
+            0
+        };
         self.outline_size2 = outline;
         self.mark_layout_dirty();
     }
 
     pub fn set_shadow_dist(&mut self, dist: u8) {
+        // No outlines or shadows on the PlayStation: its text is plain bitmap glyphs.
+        #[cfg(feature = "psx")]
+        let dist = {
+            let _ = dist;
+            0
+        };
         self.shadow_distance = dist;
         self.mark_layout_dirty();
     }
@@ -1500,6 +1622,10 @@ impl TextItem {
     }
 
     pub fn set_ruby_text_mode(&mut self, func: u8) {
+        // On the small consoles (`old_school`) ruby would be a few pixels high: show only the
+        // base text (mode 1), which also gives the line back the room the ruby took.
+        #[cfg(feature = "old_school")]
+        let func = if func == 2 { 1 } else { func };
         self.ruby_text_mode = func;
     }
 
@@ -1621,29 +1747,40 @@ impl TextItem {
         })
     }
 
-    fn crop_rgba(buf: Vec<u8>, width: u32, height: u32, rect: RectI32) -> Vec<u8> {
+    #[cfg_attr(not(feature = "psx"), allow(unused_mut))]
+    fn crop_rgba(mut buf: Vec<u8>, width: u32, height: u32, rect: RectI32) -> Vec<u8> {
         if rect.x == 0 && rect.y == 0 && rect.w == width as i32 && rect.h == height as i32 {
             return buf;
         }
         let crop_w = rect.w.max(0) as u32;
         let crop_h = rect.h.max(0) as u32;
-        let mut out = vec![
-            0;
-            (crop_w as usize)
-                .saturating_mul(crop_h as usize)
-                .saturating_mul(4)
-        ];
-        let src_stride = width as usize * 4;
-        let dst_stride = crop_w as usize * 4;
-        let x = rect.x.max(0) as usize;
-        let y = rect.y.max(0) as usize;
-        for row in 0..crop_h as usize {
-            let src_start = (y + row) * src_stride + x * 4;
-            let dst_start = row * dst_stride;
-            out[dst_start..dst_start + dst_stride]
-                .copy_from_slice(&buf[src_start..src_start + dst_stride]);
+        #[cfg(feature = "psx")]
+        {
+            let src_stride = width as usize * 4;
+            let dst_stride = crop_w as usize * 4;
+            for row in 0..crop_h as usize {
+                let start = (rect.y.max(0) as usize + row) * src_stride + rect.x.max(0) as usize * 4;
+                buf.copy_within(start..start + dst_stride, row * dst_stride);
+            }
+            buf.truncate(dst_stride * crop_h as usize);
+            buf.shrink_to_fit();
+            return buf;
         }
-        out
+        #[cfg(not(feature = "psx"))]
+        {
+            let mut out = vec![0; (crop_w as usize).saturating_mul(crop_h as usize).saturating_mul(4)];
+            let src_stride = width as usize * 4;
+            let dst_stride = crop_w as usize * 4;
+            let x = rect.x.max(0) as usize;
+            let y = rect.y.max(0) as usize;
+            for row in 0..crop_h as usize {
+                let src_start = (y + row) * src_stride + x * 4;
+                let dst_start = row * dst_stride;
+                out[dst_start..dst_start + dst_stride]
+                    .copy_from_slice(&buf[src_start..src_start + dst_stride]);
+            }
+            out
+        }
     }
 
     fn is_suspend_chr(&self, ch: char) -> bool {
@@ -1720,7 +1857,9 @@ impl TextItem {
         let extra = Self::layout_extra_advance_px(outline, distance);
         let eff_size = Self::effective_gdi_font_size(size, outline, distance);
         let font = fonts.for_char(ch);
-        let (metrics, _) = font.rasterize(ch, eff_size);
+        // Metrics only: this path discards the bitmap. `rasterize` would run the
+        // glyph coverage pass and allocate a Vec for every measurement.
+        let metrics = font.metrics(ch, eff_size);
         metrics.advance_width.ceil() as i32 + extra
     }
 
@@ -2121,7 +2260,8 @@ impl TextItem {
     ) -> RectI32 {
         let eff_size = Self::effective_gdi_font_size(size, outline, shadow_dist);
         let font = fonts.for_char(ch);
-        let (metrics, _) = font.rasterize(ch, eff_size);
+        // Bounds only: no coverage bitmap is used here.
+        let metrics = font.metrics(ch, eff_size);
         let gx = x + metrics.xmin;
         let gy = y - (metrics.ymin + metrics.height as i32);
         Self::glyph_bounds(
@@ -2519,7 +2659,10 @@ impl TextItem {
         if self.pixel_buffer.len() != self.full_buffer.len() {
             return;
         }
+        #[cfg(not(feature = "psx"))]
         let (bw, bh) = self.raster_dimensions();
+        #[cfg(feature = "psx")]
+        let (bw, bh) = (self.surface_width_px, self.surface_height_px);
         let render_scale = self.effective_render_scale();
         let mut consumed_cols = 0usize;
         let old_visible = self.applied_visible_chars;
@@ -2592,11 +2735,17 @@ impl TextItem {
         } else {
             self.text_size2 as f32
         };
+        // The PlayStation draws its font at the one size it has, without outline or shadow,
+        // whatever the script asks for.
+        #[cfg(feature = "psx")]
+        let (main_size, ruby_size) = (crate::font::psx_cell() as f32, crate::font::psx_cell() as f32);
         let main_draw_size = main_size * render_scale;
         let ruby_draw_size = ruby_size * render_scale;
         let draw_outline1 = Self::scale_len_u8(self.outline_size1, render_scale);
         let draw_outline2 = Self::scale_len_u8(self.outline_size2, render_scale);
         let draw_shadow = Self::scale_len_u8(self.shadow_distance, render_scale);
+        #[cfg(feature = "psx")]
+        let (draw_outline1, draw_outline2, draw_shadow) = (0u8, 0u8, 0u8);
         let main_slot: u8 = if self.text_size1 == 0 {
             16
         } else {
@@ -2665,7 +2814,6 @@ impl TextItem {
                         &item_for_measure,
                     );
                     if self.should_wrap_before_item(pen_x, line_has_any, item_adv, None) {
-                        line_has_any = false;
                         pen_x = self.line_start_x as i32;
                         pen_y += line_h;
                     }
@@ -2780,20 +2928,14 @@ impl TextItem {
                         &item_for_measure,
                     );
                     if self.should_wrap_before_item(pen_x, line_has_any, item_adv, Some(ch)) {
-                        line_has_any = false;
                         pen_x = self.line_start_x as i32;
                         pen_y += line_h;
                     }
 
-                    let logical_adv = self.measure_char_advance(
-                        &main_fonts,
-                        main_size,
-                        gaiji,
-                        main_slot,
-                        ch,
-                        self.outline_size1,
-                        self.shadow_distance,
-                    );
+                    // `item_adv` was computed above with the same font, size and
+                    // effects and already includes `main_gap_x`; reuse it instead
+                    // of measuring (and re-rasterizing) the glyph a second time.
+                    let logical_adv = item_adv - self.main_gap_x as i32;
                     let draw_x = Self::scale_pos_i32(pen_x, render_scale);
                     let draw_cell_top = Self::scale_pos_i32(pen_y, render_scale);
                     let draw_y = Self::baseline_from_cell_top(
@@ -2859,7 +3001,6 @@ impl TextItem {
                         item_adv,
                         fontitem_first_char(&item_for_measure),
                     ) {
-                        line_has_any = false;
                         pen_x = self.line_start_x as i32;
                         pen_y += line_h;
                     }
@@ -2997,7 +3138,6 @@ impl TextItem {
             }
         }
 
-        line_has_any = false;
         self.total_chars = total_required_units.max(0) as usize;
         if self.speed == 0 || self.translation_show_complete {
             self.visible_chars = self.total_chars;
@@ -3024,14 +3164,39 @@ impl TextItem {
             self.applied_visible_chars = self.total_chars;
             self.translation_show_complete = false;
         } else {
-            self.surface_origin_x_px = 0;
-            self.surface_origin_y_px = 0;
-            self.surface_width_px = bw;
-            self.surface_height_px = bh;
-            self.full_buffer = full_buffer;
-            self.reveal_queue = reveal_queue;
-            self.ensure_visible_buffer(bw, bh)?;
-            self.apply_reveal_delta_to_current_target();
+            #[cfg(not(feature = "psx"))]
+            {
+                self.surface_origin_x_px = 0;
+                self.surface_origin_y_px = 0;
+                self.surface_width_px = bw;
+                self.surface_height_px = bh;
+                self.full_buffer = full_buffer;
+                self.reveal_queue = reveal_queue;
+                self.ensure_visible_buffer(bw, bh)?;
+                self.apply_reveal_delta_to_current_target();
+            }
+            #[cfg(feature = "psx")]
+            {
+                // Retain the complete reveal, but omit transparent textbox margins.
+                // Otherwise full/visible/GraphBuff copies of a 171x90 textbox
+                // exhaust 2 MiB before its first line can be shown.
+                if let Some(bounds) = Self::alpha_bounds(&full_buffer, bw, bh) {
+                    self.surface_origin_x_px = bounds.x as u32;
+                    self.surface_origin_y_px = bounds.y as u32;
+                    self.surface_width_px = bounds.w as u32;
+                    self.surface_height_px = bounds.h as u32;
+                    for item in &mut reveal_queue {
+                        item.rect.x -= bounds.x;
+                        item.rect.y -= bounds.y;
+                    }
+                    self.full_buffer = Self::crop_rgba(full_buffer, bw, bh, bounds);
+                    self.reveal_queue = reveal_queue;
+                    self.ensure_visible_buffer(self.surface_width_px, self.surface_height_px)?;
+                    self.apply_reveal_delta_to_current_target();
+                } else {
+                    self.release_surfaces();
+                }
+            }
         }
         self.layout_dirty = false;
         Ok(())
@@ -3043,6 +3208,9 @@ impl Default for TextItem {
         Self::new()
     }
 }
+
+/// Upper bound (in pixels, per axis) for HiDPI text backing surfaces.
+const MAX_HIDPI_TEXT_SURFACE_DIM: f32 = 4096.0;
 
 #[derive(Debug, Copy, Clone)]
 pub struct TextSlotSurfaceInfo {
@@ -3082,6 +3250,11 @@ impl TextManager {
     pub fn new() -> Self {
         Self {
             items: vec![TextItem::new(); 32],
+            // The PlayStation keeps one bit per 8 bytes of script, grown as text is read: the
+            // full map is 1 MiB, half its RAM.
+            #[cfg(feature = "psx")]
+            readed_text: Vec::new(),
+            #[cfg(not(feature = "psx"))]
             readed_text: vec![0u32; 0x800000 / 32],
             device_render_scale: 1.0,
             render_scale: 1.0,
@@ -3207,6 +3380,14 @@ impl TextManager {
         self.items[id as usize].arm_sync_print_wait(thread_id);
     }
 
+    pub(crate) fn cancel_sync_print_waits(&mut self, thread_id: u32) {
+        for text in &mut self.items {
+            if thread_id == 0 || text.sync_wait_thread == Some(thread_id) {
+                text.clear_sync_print_wait();
+            }
+        }
+    }
+
     pub fn collect_completed_sync_print_waiters(&mut self) -> Vec<u32> {
         let mut out = Vec::new();
         for t in self.items.iter_mut() {
@@ -3299,9 +3480,15 @@ impl TextManager {
         if addr >= 0x800000 {
             return false;
         }
+        #[cfg(feature = "psx")]
+        let addr = addr >> 3;
         let idx = (addr / 32) as usize;
         let bit = addr % 32;
         let mask = 1u32 << bit;
+        #[cfg(feature = "psx")]
+        if idx >= self.readed_text.len() {
+            self.readed_text.resize(idx + 1, 0);
+        }
         let prev = self.readed_text[idx] & mask;
         self.readed_text[idx] |= mask;
         prev == 0
@@ -3834,6 +4021,22 @@ mod hidpi_surface_tests {
     use super::*;
 
     #[test]
+    fn hidpi_scale_is_capped_for_large_text_buffs() {
+        let mut manager = TextManager::new();
+        manager.set_render_scale(3.0);
+        manager.set_text_buff(0, 1280, 720);
+        assert_eq!(manager.items[0].raster_dimensions(), (3840, 2160));
+
+        manager.set_text_buff(1, 1280, 4000);
+        let (w, h) = manager.items[1].raster_dimensions();
+        assert!(h <= MAX_HIDPI_TEXT_SURFACE_DIM as u32 && w < 3840);
+
+        // Logical sizes above the cap are never downscaled below 1:1.
+        manager.set_text_buff(2, 640, 5000);
+        assert_eq!(manager.items[2].raster_dimensions(), (640, 5000));
+    }
+
+    #[test]
     fn text_buff_does_not_allocate_hidpi_surfaces_before_print() {
         let mut manager = TextManager::new();
         manager.set_render_scale(3.5);
@@ -4067,5 +4270,42 @@ mod font_override_tests {
         let (_, bitmap) = set.primary().rasterize('A', 16.0);
         let (_, gothic_a) = fonts.get_font(FONTFACE_MS_GOTHIC).rasterize('A', 16.0);
         assert_eq!(bitmap, gothic_a);
+    }
+}
+
+#[cfg(all(test, not(feature = "no_std")))]
+mod font_enumerator_tests {
+    use super::*;
+
+    #[test]
+    fn add_font_file_returns_id_and_force_normalizes() {
+        let dir = std::env::temp_dir().join("rfvp_font_force_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("MSGOTHIC.TTF");
+        std::fs::write(&path, include_bytes!("./fonts/MSGOTHIC.TTF")).unwrap();
+
+        let mut fonts = FontEnumerator::new();
+        assert_eq!(fonts.get_font_count(), 0);
+
+        let id = fonts.add_font_file(&path).expect("font should load");
+        assert_eq!(id, 0);
+        assert_eq!(fonts.get_font_count(), 1);
+
+        fonts.set_forced_font(Some(0));
+        assert_eq!(fonts.forced_font_id(), Some(0));
+        assert!(fonts.is_font_forced());
+
+        // Invalid ids normalize to "no forced font".
+        fonts.set_forced_font(Some(99));
+        assert_eq!(fonts.forced_font_id(), None);
+        fonts.set_forced_font(Some(-1));
+        assert_eq!(fonts.forced_font_id(), None);
+
+        // Re-scanning clears the forced id to avoid dangling indices.
+        fonts.set_forced_font(Some(0));
+        let _ = fonts.init_fontface();
+        assert_eq!(fonts.forced_font_id(), None);
+
+        assert_eq!(fonts.add_font_file(&dir.join("missing.ttf")), None);
     }
 }

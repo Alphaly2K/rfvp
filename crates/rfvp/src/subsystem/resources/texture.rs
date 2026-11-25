@@ -19,6 +19,16 @@ use std::path::Path;
 
 use image::{DynamicImage, GrayAlphaImage, ImageBuffer};
 
+// Host unit tests exercise the helpers, but only Vita uses them in the engine.
+#[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+mod vita;
+
+#[cfg(target_os = "vita")]
+extern "C" {
+    fn rfvp_psv_bgra_to_rgba(src: *const u8, dst: *mut u8, count: usize);
+    fn rfvp_psv_bgr_to_rgba(src: *const u8, dst: *mut u8, count: usize);
+}
+
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextureType {
@@ -31,8 +41,23 @@ pub enum TextureType {
     Multi32Bit = 2,
     /// for mask
     Single8Bit = 3,
+    /// PlayStation CLUT pictures (rfvp-psx-convert): 8-bit and 4-bit indices.
+    Clut8 = 0x10,
+    Clut4 = 0x11,
     /// for gaiji
     Single1Bit = 4,
+}
+
+impl TextureType {
+    /// A single color picture: 24- or 32-bit, or a PlayStation CLUT picture in their place.
+    pub fn is_picture(typ: Self) -> bool {
+        match typ {
+            Self::Single24Bit | Self::Single32Bit => true,
+            #[cfg(feature = "psx")]
+            Self::Clut8 | Self::Clut4 => true,
+            _ => false,
+        }
+    }
 }
 
 impl TryFrom<u16> for TextureType {
@@ -45,6 +70,10 @@ impl TryFrom<u16> for TextureType {
             2 => Ok(Self::Multi32Bit),
             3 => Ok(Self::Single8Bit),
             4 => Ok(Self::Single1Bit),
+            #[cfg(feature = "psx")]
+            0x10 => Ok(Self::Clut8),
+            #[cfg(feature = "psx")]
+            0x11 => Ok(Self::Clut4),
             _ => bail!("Invalid texture type: {}", value),
         }
     }
@@ -67,6 +96,13 @@ pub struct NvsgTexture {
     unknown3: u32,
     unknown4: u32,
     slices: Vec<Vec<u8>>,
+    // Keep a multi-frame Vita resource in its original decompression allocation.
+    #[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+    packed_frames: Option<Vec<u8>>,
+    #[cfg(feature = "psx")]
+    clut_stride: u32,
+    #[cfg(feature = "psx")]
+    clut_alpha: alloc::sync::Arc<Vec<u8>>,
     name: String,
     outlen: Option<usize>,
 }
@@ -86,6 +122,12 @@ impl NvsgTexture {
             unknown3: 0,
             unknown4: 0,
             slices: vec![],
+            #[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+            packed_frames: None,
+            #[cfg(feature = "psx")]
+            clut_stride: 0,
+            #[cfg(feature = "psx")]
+            clut_alpha: Default::default(),
             name: name.to_string(),
             outlen: None,
         }
@@ -101,6 +143,10 @@ impl NvsgTexture {
     /// is released, but header fields and the name pointer are left untouched.
     pub fn clear_slices_keep_header(&mut self) {
         self.slices.clear();
+        #[cfg(target_os = "vita")]
+        {
+            self.packed_frames = None;
+        }
         self.outlen = None;
     }
 
@@ -205,7 +251,19 @@ impl NvsgTexture {
             self.entry_count = 1;
         }
 
+        #[cfg(target_os = "vita")]
+        let data_buff = data_buff.get(hzc1hdr.header_length as usize..)
+            .ok_or_else(|| anyhow!("NVSG header exceeds input"))?;
+        #[cfg(not(target_os = "vita"))]
         let data_buff = &data_buff[hzc1hdr.header_length as usize..];
+
+        #[cfg(feature = "psx")]
+        if matches!(self.typ, TextureType::Clut8 | TextureType::Clut4) {
+            if !type_callback(self.typ) {
+                bail!("Unexpected texture type: {:?}", self.typ);
+            }
+            return self.read_clut(data_buff);
+        }
 
         let depth = match self.typ {
             TextureType::Single24Bit => 3,
@@ -220,7 +278,14 @@ impl NvsgTexture {
 
         let out_len = hzc1hdr.original_length as usize;
 
-        #[cfg(all(feature = "zlib-flate2", not(feature = "no_std")))]
+        #[cfg(target_os = "vita")]
+        let mut out_buff = vita::inflate(data_buff, out_len)?;
+
+        #[cfg(all(
+            not(target_os = "vita"),
+            feature = "zlib-flate2",
+            not(feature = "no_std")
+        ))]
         let mut out_buff = {
             let mut out_buff = vec![0; out_len];
             let mut decoder = ZlibDecoder::new(data_buff);
@@ -229,6 +294,7 @@ impl NvsgTexture {
         };
 
         #[cfg(all(
+            not(target_os = "vita"),
             not(feature = "zlib-flate2"),
             any(feature = "uefi-zlib", feature = "no_std")
         ))]
@@ -261,6 +327,20 @@ impl NvsgTexture {
         self.outlen = Some(out_len);
         let frame_len = self.width as u64 * self.height as u64 * depth;
 
+        #[cfg(target_os = "vita")]
+        {
+            self.packed_frames = None;
+            if self.typ == TextureType::Multi32Bit {
+                self.packed_frames = Some(out_buff);
+                return Ok(());
+            }
+            // A complete single frame can take ownership without another copy.
+            if self.entry_count == 1 && frame_len == out_buff.len() as u64 {
+                self.slices.push(out_buff);
+                return Ok(());
+            }
+        }
+
         for i in 0..self.entry_count as u64 {
             let frame = out_buff
                 .get(i as usize * frame_len as usize..(i as usize + 1) * frame_len as usize);
@@ -273,6 +353,89 @@ impl NvsgTexture {
         Ok(())
     }
 
+    /// A CLUT picture, stored as it is (see rfvp-psx's image.rs): u16 colors, u16 stride, the
+    /// palette, then each frame's indices.
+    #[cfg(feature = "psx")]
+    fn read_clut(&mut self, payload: &[u8]) -> Result<()> {
+        let colors = self.read_u16le(payload, 0)? as usize;
+        let stride = self.read_u16le(payload, 2)? as usize;
+        let palette_end = 4 + colors * 2;
+        // Each entry's real alpha follows the palette.
+        let alpha_end = palette_end + colors;
+        let alpha = payload.get(palette_end..alpha_end).ok_or_else(|| anyhow!("CLUT alpha past the end"))?.to_vec();
+        let row = if self.typ == TextureType::Clut4 { stride / 2 } else { stride };
+        let frame_len = row * self.height as usize;
+        // Each frame as the GPU takes it: colors, stride, palette, its indices.
+        self.slices.clear();
+        for i in 0..self.entry_count as usize {
+            let start = alpha_end + i * frame_len;
+            match payload.get(start..start + frame_len) {
+                Some(frame) => {
+                    let mut bytes = Vec::with_capacity(palette_end + frame_len);
+                    bytes.extend_from_slice(&payload[..palette_end]);
+                    bytes.extend_from_slice(frame);
+                    self.slices.push(bytes);
+                }
+                None => break,
+            }
+        }
+        self.clut_alpha = alloc::sync::Arc::new(alpha);
+        self.clut_stride = stride as u32;
+        self.outlen = Some(payload.len());
+        Ok(())
+    }
+
+    /// A one-frame CLUT file made into its picture in place (the file's bytes become the
+    /// picture's: nothing is copied but the alpha table). Returns the file back when it is not
+    /// one (another type, several frames), for `read_texture`.
+    #[cfg(feature = "psx")]
+    pub fn read_single_clut(&mut self, mut buff: Vec<u8>) -> core::result::Result<DynamicImage, Vec<u8>> {
+        let field16 = |b: &[u8], at: usize| b.get(at..at + 2).map(|x| u16::from_le_bytes([x[0], x[1]]));
+        let field32 = |b: &[u8], at: usize| b.get(at..at + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]));
+        let (Some(header_len), Some(typ), Some(count)) = (field32(&buff, 8), field16(&buff, 18), field32(&buff, 32)) else {
+            return Err(buff);
+        };
+        if buff.get(0..4) != Some(&HZC1_SIGNATURE[..]) || !(typ == 0x10 || typ == 0x11) || count > 1 {
+            return Err(buff);
+        }
+        let h = 12usize;
+        self.typ = if typ == 0x11 { TextureType::Clut4 } else { TextureType::Clut8 };
+        self.width = field16(&buff, h + 8).unwrap_or(0);
+        self.height = field16(&buff, h + 10).unwrap_or(0);
+        self.offset_x = field16(&buff, h + 12).unwrap_or(0);
+        self.offset_y = field16(&buff, h + 14).unwrap_or(0);
+        self.u = field16(&buff, h + 16).unwrap_or(0);
+        self.v = field16(&buff, h + 18).unwrap_or(0);
+        self.entry_count = 1;
+        let start = h + header_len as usize;
+        let (Some(colors), Some(stride)) = (field16(&buff, start), field16(&buff, start + 2)) else {
+            return Err(buff);
+        };
+        let (colors, stride) = (colors as usize, stride as usize);
+        let palette_end = start + 4 + colors * 2;
+        let alpha_end = palette_end + colors;
+        let row = if typ == 0x11 { stride / 2 } else { stride };
+        let frame_end = alpha_end + row * self.height as usize;
+        if buff.len() < frame_end {
+            return Err(buff);
+        }
+        let alpha = buff[palette_end..alpha_end].to_vec();
+        buff.truncate(frame_end);
+        buff.drain(palette_end..alpha_end);
+        buff.drain(..start);
+        buff.shrink_to_fit();
+        self.clut_alpha = alloc::sync::Arc::new(alpha);
+        self.clut_stride = stride as u32;
+        Ok(DynamicImage::ImageClut(crate::ClutImage {
+            width: self.width as u32,
+            height: self.height as u32,
+            stride: stride as u32,
+            bits: if typ == 0x11 { 4 } else { 8 },
+            bytes: buff,
+            alpha: self.clut_alpha.clone(),
+        }))
+    }
+
     pub fn texture_color_tone_32(
         &mut self,
         index: usize,
@@ -280,6 +443,7 @@ impl NvsgTexture {
         green_value: i32,
         blue_value: i32,
     ) -> Result<()> {
+        #[cfg(not(target_os = "vita"))]
         if index >= self.slices.len() {
             bail!("Invalid index: {}", index);
         }
@@ -294,6 +458,10 @@ impl NvsgTexture {
         //
         // Script contract for GraphRGB/PartsRGB tone values:
         //   0..=200, where 100 is a no-op.
+        #[cfg(target_os = "vita")]
+        let texture = self.frame_slice_mut(index)
+            .ok_or_else(|| anyhow!("invalid texture frame {}", index))?;
+        #[cfg(not(target_os = "vita"))]
         let texture = &mut self.slices[index];
 
         let r_adj = red_value.clamp(0, 200) as u32;
@@ -350,7 +518,7 @@ impl NvsgTexture {
         let slice = &self.slices[index];
         let mut img = GrayAlphaImage::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
             let index = (y * self.width as u32 + x) as usize;
             let alpha_value = slice[index];
             *pixel = image::LumaA([0xff, alpha_value]);
@@ -360,17 +528,33 @@ impl NvsgTexture {
         Ok(())
     }
 
+    #[cfg(not(target_os = "vita"))]
     fn as_8bit_texture(&self, index: usize) -> Result<GrayAlphaImage> {
         let slice = &self.slices[index];
         let mut img = GrayAlphaImage::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            #[cfg(feature = "no_std")]
+            let mut pixel = pixel;
             let index = (y * self.width as u32 + x) as usize;
             let alpha_value = slice[index];
             *pixel = image::LumaA([0xff, alpha_value]);
         }
 
         Ok(img)
+    }
+
+    #[cfg(target_os = "vita")]
+    fn as_8bit_texture(&self, index: usize) -> Result<GrayAlphaImage> {
+        let slice = self.frame_bytes(index, 1)?;
+        let output_len = slice.len().checked_mul(2)
+            .ok_or_else(|| anyhow::anyhow!("alpha image size overflow"))?;
+        let mut pixels = Vec::with_capacity(output_len);
+        for &alpha in slice {
+            pixels.extend_from_slice(&[0xff, alpha]);
+        }
+        GrayAlphaImage::from_raw(self.width as u32, self.height as u32, pixels)
+            .ok_or_else(|| anyhow::anyhow!("invalid alpha image dimensions"))
     }
 
     #[cfg(not(feature = "no_std"))]
@@ -378,7 +562,7 @@ impl NvsgTexture {
         let slice = &self.slices[index];
         let mut img = ImageBuffer::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
             let index = (y * self.width as u32 + x) as usize * 3;
             let r = slice[index + 2];
             let g = slice[index + 1];
@@ -390,11 +574,14 @@ impl NvsgTexture {
         Ok(())
     }
 
+    #[cfg(not(target_os = "vita"))]
     fn as_24bit_texture(&self, index: usize) -> Result<ImageBuffer<image::Rgb<u8>, Vec<u8>>> {
         let slice = &self.slices[index];
         let mut img = ImageBuffer::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            #[cfg(feature = "no_std")]
+            let mut pixel = pixel;
             let index = (y * self.width as u32 + x) as usize * 3;
             let r = slice[index + 2];
             let g = slice[index + 1];
@@ -405,6 +592,17 @@ impl NvsgTexture {
         Ok(img)
     }
 
+    #[cfg(target_os = "vita")]
+    fn as_24bit_texture(&self, index: usize) -> Result<ImageBuffer<image::Rgb<u8>, Vec<u8>>> {
+        let mut pixels = self.frame_bytes(index, 3)?.to_vec();
+        for pixel in pixels.chunks_exact_mut(3) {
+            pixel.swap(0, 2);
+        }
+        ImageBuffer::from_raw(self.width as u32, self.height as u32, pixels)
+            .ok_or_else(|| anyhow::anyhow!("invalid RGB image dimensions"))
+    }
+
+    #[cfg(not(target_os = "vita"))]
     fn as_24bit_to_32bit_texture(
         &self,
         index: usize,
@@ -412,7 +610,9 @@ impl NvsgTexture {
         let slice = &self.slices[index];
         let mut img = ImageBuffer::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            #[cfg(feature = "no_std")]
+            let mut pixel = pixel;
             let index = (y * self.width as u32 + x) as usize * 3;
             let r = slice[index + 2];
             let g = slice[index + 1];
@@ -423,12 +623,33 @@ impl NvsgTexture {
         Ok(img)
     }
 
+    #[cfg(target_os = "vita")]
+    fn as_24bit_to_32bit_texture(
+        &self,
+        index: usize,
+    ) -> Result<ImageBuffer<image::Rgba<u8>, Vec<u8>>> {
+        let slice = self.frame_bytes(index, 3)?;
+        let output_len = (self.width as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| anyhow::anyhow!("RGBA image size overflow"))?;
+        let mut pixels = Vec::with_capacity(output_len);
+        // SAFETY: frame_bytes validated 3 bytes per pixel; output_len is the
+        // checked 4-byte size. The converter writes all pixels, including tails.
+        unsafe {
+            rfvp_psv_bgr_to_rgba(slice.as_ptr(), pixels.as_mut_ptr(), output_len / 4);
+            pixels.set_len(output_len);
+        }
+        ImageBuffer::from_raw(self.width as u32, self.height as u32, pixels)
+            .ok_or_else(|| anyhow::anyhow!("invalid RGBA image dimensions"))
+    }
+
     #[cfg(not(feature = "no_std"))]
     fn extract_32bit_texture(&self, index: usize, out_path: impl AsRef<Path>) -> Result<()> {
         let slice = &self.slices[index];
         let mut img = ImageBuffer::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
             let index = (y * self.width as u32 + x) as usize * 4;
             let r = slice[index + 2];
             let g = slice[index + 1];
@@ -441,11 +662,14 @@ impl NvsgTexture {
         Ok(())
     }
 
+    #[cfg(not(target_os = "vita"))]
     fn as_32bit_texture(&self, index: usize) -> Result<ImageBuffer<image::Rgba<u8>, Vec<u8>>> {
         let slice = &self.slices[index];
         let mut img = ImageBuffer::new(self.width as u32, self.height as u32);
 
-        for (x, y, mut pixel) in img.enumerate_pixels_mut() {
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            #[cfg(feature = "no_std")]
+            let mut pixel = pixel;
             let index = (y * self.width as u32 + x) as usize * 4;
             let r = slice[index + 2];
             let g = slice[index + 1];
@@ -455,6 +679,60 @@ impl NvsgTexture {
         }
 
         Ok(img)
+    }
+
+    #[cfg(target_os = "vita")]
+    fn as_32bit_texture(&self, index: usize) -> Result<ImageBuffer<image::Rgba<u8>, Vec<u8>>> {
+        let source = self.frame_bytes(index, 4)?;
+        let mut pixels = Vec::with_capacity(source.len());
+        // SAFETY: frame_bytes checked the complete source, and the converter
+        // initializes every pixel in the separate destination, including tails.
+        unsafe {
+            rfvp_psv_bgra_to_rgba(source.as_ptr(), pixels.as_mut_ptr(), source.len() / 4);
+            pixels.set_len(source.len());
+        }
+        ImageBuffer::from_raw(self.width as u32, self.height as u32, pixels)
+            .ok_or_else(|| anyhow!("invalid RGBA image dimensions"))
+    }
+
+    #[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+    fn frame_bytes(&self, index: usize, channels: usize) -> Result<&[u8]> {
+        let length = (self.width as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|n| n.checked_mul(channels))
+            .ok_or_else(|| anyhow::anyhow!("image size overflow"))?;
+        self.frame_slice(index)
+            .and_then(|frame| frame.get(..length))
+            .ok_or_else(|| anyhow::anyhow!("invalid or truncated texture frame {}", index))
+    }
+
+    #[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+    fn packed_frame_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
+        if self.typ != TextureType::Multi32Bit || index >= self.entry_count as usize {
+            return None;
+        }
+        let stride = (self.width as usize).checked_mul(self.height as usize)?.checked_mul(4)?;
+        let start = index.checked_mul(stride)?;
+        Some(start..start.checked_add(stride)?)
+    }
+
+    #[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+    fn frame_slice(&self, index: usize) -> Option<&[u8]> {
+        if let Some(pixels) = self.packed_frames.as_ref() {
+            pixels.get(self.packed_frame_range(index)?)
+        } else {
+            self.slices.get(index).map(Vec::as_slice)
+        }
+    }
+
+    #[cfg(any(target_os = "vita", all(test, feature = "no_std")))]
+    fn frame_slice_mut(&mut self, index: usize) -> Option<&mut [u8]> {
+        if self.packed_frames.is_some() {
+            let range = self.packed_frame_range(index)?;
+            self.packed_frames.as_mut()?.get_mut(range)
+        } else {
+            self.slices.get_mut(index).map(Vec::as_mut_slice)
+        }
     }
 
     #[cfg(not(feature = "no_std"))]
@@ -481,12 +759,90 @@ impl NvsgTexture {
         Ok(())
     }
 
+    /// PS1-only derivative; CPU reads continue to return the original Area alpha.
+    /// Reuse the input allocation for GPU pixels so loading does not duplicate a full mask.
+    #[cfg(feature = "psx")]
+    pub fn read_single_ps1_mask(&mut self, mut bytes: Vec<u8>) -> core::result::Result<DynamicImage, Vec<u8>> {
+        let (width, height, start, length) = {
+            let plane = match crate::ps1_mask::read(&bytes) {
+                Ok(Some(plane)) if plane.frames == 1 => plane,
+                _ => return Err(bytes),
+            };
+            let frame = plane.frame(0).unwrap();
+            (plane.width, plane.height, frame.as_ptr() as usize - bytes.as_ptr() as usize, frame.len())
+        };
+        let field16 = |at| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let field32 = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let expected = usize::from(width) * usize::from(height);
+        if field32(4) as usize != expected { return Err(bytes); }
+        let compressed = 12 + field32(8) as usize;
+        // Exclude the uncompressed GPU trailer and decode into the exact-sized alpha plane.
+        let Some(compressed_end) = start.checked_sub(crate::ps1_mask::HEADER_SIZE) else {
+            return Err(bytes);
+        };
+        if compressed > compressed_end { return Err(bytes); }
+        let mut alpha = vec![0u8; expected];
+        match miniz_oxide::inflate::decompress_slice_iter_to_slice(
+            &mut alpha, core::iter::once(&bytes[compressed..compressed_end]), true, false,
+        ) {
+            Ok(length) if length == expected => {},
+            _ => return Err(bytes),
+        }
+        self.typ = TextureType::Single8Bit;
+        self.unknown1 = field16(16);
+        self.width = width;
+        self.height = height;
+        self.offset_x = field16(24);
+        self.offset_y = field16(26);
+        self.u = field16(28);
+        self.v = field16(30);
+        self.entry_count = 1;
+        self.unknown3 = field32(36);
+        self.unknown4 = field32(40);
+        self.outlen = Some(expected);
+        self.slices.clear();
+        bytes.copy_within(start..start + length, 0);
+        bytes.truncate(length);
+        Ok(DynamicImage::ImagePs1Mask(crate::Ps1MaskImage {
+            width: u32::from(width), height: u32::from(height), alpha, gpu: bytes,
+        }))
+    }
+
+    #[cfg(feature = "psx")]
+    pub fn get_ps1_mask_texture(&self, index: usize, bytes: &[u8]) -> Result<DynamicImage> {
+        let plane = crate::ps1_mask::read(bytes).map_err(|error| anyhow!(error))?;
+        let Some(plane) = plane else {
+            log::warn!("PS1 mask {} has no offline Bayer plane; reconvert it for mask dissolves", self.name);
+            return self.get_texture(index);
+        };
+        let alpha = self.slices.get(index).ok_or_else(|| anyhow!("invalid mask frame"))?;
+        let gpu = plane.frame(index).ok_or_else(|| anyhow!("invalid mask GPU frame"))?;
+        Ok(DynamicImage::ImagePs1Mask(crate::Ps1MaskImage {
+            width: u32::from(plane.width), height: u32::from(plane.height),
+            alpha: alpha.clone(), gpu: gpu.to_vec(),
+        }))
+    }
+
     pub fn get_texture(&self, index: usize) -> Result<DynamicImage> {
+        #[cfg(target_os = "vita")]
+        if self.frame_slice(index).is_none() {
+            bail!("Invalid index: {}", index);
+        }
+        #[cfg(not(target_os = "vita"))]
         if index >= self.slices.len() {
             bail!("Invalid index: {}", index);
         }
 
         let img = match self.typ {
+            #[cfg(feature = "psx")]
+            TextureType::Clut8 | TextureType::Clut4 => DynamicImage::ImageClut(crate::ClutImage {
+                width: self.width as u32,
+                height: self.height as u32,
+                stride: self.clut_stride,
+                bits: if self.typ == TextureType::Clut4 { 4 } else { 8 },
+                bytes: self.slices[index].clone(),
+                alpha: self.clut_alpha.clone(),
+            }),
             TextureType::Single8Bit | TextureType::Single1Bit => {
                 DynamicImage::ImageLumaA8(self.as_8bit_texture(index)?)
             }
@@ -511,7 +867,7 @@ struct HZC1HDR {
     header_length: u32,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "no_std")))]
 mod tests {
     use super::*;
     use std::path::Path;

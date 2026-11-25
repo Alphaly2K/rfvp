@@ -24,7 +24,7 @@ use self::snow::SnowMotionContainer;
 
 use super::gaiji_manager::GaijiManager;
 use super::gaiji_manager::GaijiManagerSnapshotV1;
-use super::graph_buff::{copy_rect, copy_rect_clipped, GraphBuff, GraphBuffSnapshotV1};
+use super::graph_buff::{copy_rect_clipped, GraphBuff, GraphBuffSnapshotV1};
 pub use super::motion_manager::alpha::{AlphaMotionContainer, AlphaMotionType};
 pub use super::motion_manager::normal_move::{MoveMotionContainer, MoveMotionType};
 pub use super::motion_manager::rotation_move::{RotationMotionContainer, RotationMotionType};
@@ -32,6 +32,7 @@ pub use super::motion_manager::s2_move::{ScaleMotionContainer, ScaleMotionType};
 pub use super::motion_manager::v3d::{V3dMotionContainer, V3dMotionType};
 pub use super::motion_manager::z_move::{ZMotionContainer, ZMotionType};
 use super::parts_manager::PartsManager;
+use super::vfs::Vfs;
 use super::parts_manager::PartsManagerSnapshotV1;
 use super::prim::{PrimManager, INVAILD_PRIM_HANDLE};
 use super::prim::{PrimManagerSnapshotV1, PrimSnapshotV1};
@@ -39,9 +40,8 @@ use super::text_manager::TextManagerSnapshotV1;
 use super::text_manager::{TextManager, TextSlotSurfaceUpdate};
 use crate::subsystem::resources::color_manager::ColorManager;
 use crate::subsystem::resources::prim::{Prim, PrimType};
-use anyhow::{bail, Result};
+use anyhow::Result;
 use atomic_refcell::{AtomicRefCell, AtomicRefMut};
-use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -70,6 +70,9 @@ pub struct MotionManager {
     pub(crate) prim_manager: PrimManager,
     pub(crate) parts_manager: AtomicRefCell<PartsManager>,
     pub(crate) gaiji_manager: GaijiManager,
+    #[cfg(feature = "psx")]
+    textures: crate::subsystem::resources::graph_buff::GraphSlots,
+    #[cfg(not(feature = "psx"))]
     textures: Vec<GraphBuff>,
     pending_gpu_graph_unloads: Vec<u16>,
     pub(crate) text_manager: TextManager,
@@ -80,6 +83,8 @@ pub struct MotionManager {
     dissolve_duration_ms: u32,
     dissolve_elapsed_ms: u32,
     dissolve_alpha: f32,
+    /// Counts started dissolves: a mask dissolve wipes away the frame shown when it started.
+    dissolve_serial: u32,
     dissolve2: Dissolve2State,
 }
 
@@ -96,7 +101,7 @@ impl MotionManager {
     }
 
     /// Read-only access for renderers.
-    pub fn graphs(&self) -> &[GraphBuff] {
+    pub fn graphs(&self) -> &crate::subsystem::resources::graph_buff::Graphs {
         &self.textures
     }
 
@@ -125,6 +130,9 @@ impl MotionManager {
             prim_manager: PrimManager::new(),
             color_manager: ColorManager::new(),
             parts_manager,
+            #[cfg(feature = "psx")]
+            textures: crate::subsystem::resources::graph_buff::GraphSlots::new(4096),
+            #[cfg(not(feature = "psx"))]
             textures: vec![GraphBuff::new(); 4096],
             pending_gpu_graph_unloads: Vec::new(),
             gaiji_manager: GaijiManager::new(),
@@ -136,6 +144,7 @@ impl MotionManager {
             dissolve_duration_ms: 0,
             dissolve_elapsed_ms: 0,
             dissolve_alpha: 0.0,
+            dissolve_serial: 0,
             dissolve2: Dissolve2State::new(),
         }
     }
@@ -182,7 +191,7 @@ impl MotionManager {
     }
 
     /// Advance PartsMotion timers and apply completed entries to their destination primitives.
-    pub fn update_parts_motions(&mut self, elapsed: i64) {
+    pub fn update_parts_motions(&mut self, elapsed: i64, vfs: &Vfs) {
         // The original engine passes a *negative* elapsed in "Ctrl/ControlPulse" fast-forward
         // mode. For PartsMotion, a negative elapsed means: skip interpolation and commit the
         // final bitmap immediately.
@@ -203,7 +212,7 @@ impl MotionManager {
         }
 
         for (parts_id, entry_id) in completed {
-            if let Err(e) = self.draw_parts_to_texture(parts_id, entry_id as u32) {
+            if let Err(e) = self.draw_parts_to_texture(parts_id, entry_id as u32, vfs) {
                 log::warn!(
                     "update_parts_motions: failed to apply parts_id={} entry_id={}: {}",
                     parts_id,
@@ -253,6 +262,7 @@ impl MotionManager {
     ) -> Vec<u32> {
         // In the original engine, holding Ctrl (or issuing ControlPulse) forces text reveal
         // to complete immediately for the current frame.
+        let t = crate::perf::start();
         if elapsed < 0 {
             self.text_manager.force_reveal_all_non_suspended();
         } else {
@@ -260,6 +270,7 @@ impl MotionManager {
                 .tick(elapsed as u32, global_speed_var0, release_special_wait);
         }
         self.text_manager.apply_ready_text_translations();
+        crate::perf::stop(14, t);
         self.text_reprint(fonts);
         self.text_manager.collect_completed_sync_print_waiters()
     }
@@ -546,7 +557,9 @@ impl MotionManager {
         &self.textures[id as usize]
     }
 
-    pub fn draw_parts_to_texture(&mut self, parts_id: u8, entry_id: u32) -> Result<()> {
+    pub fn draw_parts_to_texture(&mut self, parts_id: u8, entry_id: u32, vfs: &Vfs) -> Result<()> {
+        let _timing = crate::perf::scope(crate::perf::PARTS_COMPOSE);
+        crate::perf::event(format_args!("parts select id={parts_id} entry={entry_id}"));
         let parts = self.parts_manager.get_mut().get(parts_id);
 
         // Best-effort behavior: if the parts buffer is absent, do nothing.
@@ -568,6 +581,8 @@ impl MotionManager {
         if !texture.get_texture_ready() {
             return Ok(());
         }
+        // The overlay is applied to CPU pixels; restore them if they were evicted after upload.
+        texture.ensure_cpu_pixels(vfs)?;
 
         // Signed offsets (negative offsets are allowed and handled via clipping).
         let dx = parts.get_offset_x_i16() as i32;
@@ -594,7 +609,8 @@ impl MotionManager {
         }
 
         // The destination GraphBuff pixels changed; bump generation so GPU cache can refresh.
-        texture.mark_dirty();
+        // They no longer match the source file, so they must stay resident.
+        texture.mark_pixels_overlaid();
 
         Ok(())
     }
@@ -661,8 +677,8 @@ impl MotionManager {
                 let total_y = y + texture.get_offset_y() as i32 + sprite.get_y() as i32;
                 let mut u = 0i32;
                 let mut v = 0i32;
-                let mut edge_x = 0i32;
-                let mut edge_y = 0i32;
+                let edge_x;
+                let edge_y;
                 if sprite.get_attr() & 1 != 0 {
                     let mut sprt_w = sprite.get_w() as i32;
                     if sprt_w > texture.get_width() as i32 {
@@ -697,9 +713,10 @@ impl MotionManager {
                     return false;
                 }
 
-                if let Some(tex) = texture.get_texture() {
-                    let pixel = tex.get_pixel(adjusted_x as u32, adjusted_y as u32);
-                    if pixel.0[3] != 0 {
+                if let Some(alpha) =
+                    texture.hit_alpha(adjusted_x as u32, adjusted_y as u32)
+                {
+                    if alpha != 0 {
                         return true;
                     }
                 }
@@ -756,6 +773,11 @@ impl MotionManager {
         graph.load_texture(file_name, buff)
     }
 
+    #[cfg(feature = "psx")]
+    pub fn load_streamed_graph(&mut self, id: u16, path: &str, vfs: &Vfs, scale: f32) -> Result<bool> {
+        self.textures[id as usize].load_streamed_clut(vfs, path, scale)
+    }
+
     #[cfg(feature = "old_school")]
     pub fn load_graph_old_school(
         &mut self,
@@ -765,7 +787,40 @@ impl MotionManager {
         scale: f32,
     ) -> Result<()> {
         let graph = &mut self.textures[id as usize];
-        graph.load_texture_old_school(file_name, buff, scale)
+        graph.load_texture_old_school(file_name, buff, scale)?;
+        // In 2 MiB the pictures a frame loads cannot all wait in RAM for the renderer: keep the
+        // hit mask only, and read each picture back when it goes to the GPU
+        // (`upload_evicted_one_by_one`).
+        #[cfg(feature = "psx")]
+        graph.evict_cpu_pixels();
+        Ok(())
+    }
+
+    /// Send the GPU every evicted graph it does not hold yet, one at a time: read it back,
+    /// `upload` it, drop the CPU copy again.
+    #[cfg(feature = "psx")]
+    pub fn upload_evicted_one_by_one(
+        &mut self,
+        vfs: &Vfs,
+        uploaded: impl Fn(u16, u64) -> bool,
+        mut upload: impl FnMut(u16, &GraphBuff) -> bool,
+    ) {
+        for (id, graph) in self.textures.present_mut() {
+            if !graph.is_cpu_evicted() || uploaded(id as u16, graph.get_generation()) {
+                continue;
+            }
+            if graph.streamed_clut.is_some() {
+                upload(id as u16, graph);
+                continue;
+            }
+            if let Err(e) = graph.ensure_cpu_pixels(vfs) {
+                log::error!("upload_evicted_one_by_one: graph {}: {:#}", id, e);
+                continue;
+            }
+            if upload(id as u16, graph) {
+                graph.evict_cpu_pixels();
+            }
+        }
     }
 
     pub fn unload_graph(&mut self, id: u16) {
@@ -774,46 +829,91 @@ impl MotionManager {
         self.pending_gpu_graph_unloads.push(id);
     }
 
-    pub fn graph_color_tone(&mut self, id: u16, r: i32, g: i32, b: i32) {
+    pub fn graph_color_tone(&mut self, id: u16, r: i32, g: i32, b: i32, vfs: &Vfs) {
         let graph = &mut self.textures[id as usize];
+        // Color tone rewrites CPU pixels; restore them if they were evicted after upload.
+        #[cfg(feature = "psx")]
+        if graph.streamed_clut.is_some() {
+            graph.set_color_tone(r, g, b);
+            return;
+        }
+        if let Err(e) = graph.ensure_cpu_pixels(vfs) {
+            log::error!("graph_color_tone: failed to restore pixels for graph {}: {:#}", id, e);
+            return;
+        }
         graph.set_color_tone(r, g, b);
     }
 
-    fn text_slot_has_active_fadeout_alpha(&self, slot: i32) -> bool {
-        if !(0..32).contains(&slot) {
-            return false;
+    /// Drop CPU copies of graphs the GPU renderer already holds at their current generation.
+    /// `uploaded(graph_id, generation)` reports whether the GPU copy is current.
+    pub fn evict_uploaded_cpu_pixels(&mut self, uploaded: impl Fn(u16, u64) -> bool) {
+        #[cfg(feature = "psx")]
+        let slots = self.textures.present_mut();
+        #[cfg(not(feature = "psx"))]
+        let slots = self.textures.iter_mut().enumerate();
+        for (id, graph) in slots {
+            if graph.can_evict_cpu_pixels() && uploaded(id as u16, graph.get_generation()) {
+                graph.evict_cpu_pixels();
+            }
         }
+    }
+
+    /// Re-decode evicted graphs whose GPU copy is missing or stale, so the renderer can upload
+    /// them again.
+    pub fn restore_evicted_cpu_pixels(&mut self, vfs: &Vfs, uploaded: impl Fn(u16, u64) -> bool) {
+        #[cfg(feature = "psx")]
+        let slots = self.textures.present_mut();
+        #[cfg(not(feature = "psx"))]
+        let slots = self.textures.iter_mut().enumerate();
+        for (id, graph) in slots {
+            if graph.is_cpu_evicted() && !uploaded(id as u16, graph.get_generation()) {
+                if let Err(e) = graph.ensure_cpu_pixels(vfs) {
+                    log::error!("restore_evicted_cpu_pixels: graph {}: {:#}", id, e);
+                }
+            }
+        }
+    }
+
+    /// Bit `n` is set when text slot `n` is shown by a prim that is fading out, or that sits
+    /// under one. Such a slot is not redrawn, so the text stays put while it fades.
+    fn text_slots_with_active_fadeout(&self) -> u32 {
+        let fading: Vec<u32> = self.alpha_motion_container.running_fadeout_prims().collect();
+        if fading.is_empty() {
+            return 0;
+        }
+        let mut mask = 0u32;
         for prim_id in 1..4096i16 {
-            let is_target_text_prim = {
+            let slot = {
                 let prim = self.prim_manager.get_prim_immutable(prim_id);
-                prim.get_type() == PrimType::PrimTypeText && prim.get_text_index() == slot as i16
+                if prim.get_type() != PrimType::PrimTypeText {
+                    continue;
+                }
+                prim.get_text_index()
             };
-            if !is_target_text_prim {
+            if !(0..32).contains(&slot) || mask & (1 << slot) != 0 {
                 continue;
             }
             let mut walker = prim_id;
             loop {
-                if self
-                    .alpha_motion_container
-                    .has_running_fadeout_motion(walker as u32)
-                {
-                    return true;
+                if fading.contains(&(walker as u32)) {
+                    mask |= 1 << slot;
+                    break;
                 }
-                let parent = {
-                    let p = self.prim_manager.get_prim_immutable(walker);
-                    p.get_parent()
-                };
+                let parent = self.prim_manager.get_prim_immutable(walker).get_parent();
                 if parent < 0 {
                     break;
                 }
                 walker = parent;
             }
         }
-        false
+        mask
     }
 
     pub fn refresh_prims(&mut self, graph_id: u16) {
-        for prim in self.prim_manager.get_prims_mut().iter_mut().skip(1) {
+        self.prim_manager.for_each_prim(|id, prim| {
+            if id == 0 {
+                return;
+            }
             let mut prim = prim.borrow_mut();
             match prim.get_type() {
                 PrimType::PrimTypeSprt => {
@@ -834,7 +934,7 @@ impl MotionManager {
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     pub fn set_gaiji(
@@ -886,6 +986,11 @@ impl MotionManager {
     }
 
     pub fn set_dissolve_mask_graph(&mut self, graph: GraphBuff) {
+        let graph = {
+            let mut graph = graph;
+            graph.generation = self.dissolve_mask_graph.generation.wrapping_add(1);
+            graph
+        };
         self.dissolve_mask_graph = graph;
     }
 
@@ -893,11 +998,25 @@ impl MotionManager {
         &self.dissolve_mask_graph
     }
 
+    #[cfg(feature = "psx")]
+    pub fn get_dissolve_mask_graph_mut(&mut self) -> &mut GraphBuff {
+        &mut self.dissolve_mask_graph
+    }
+
     pub fn start_dissolve(&mut self, duration_ms: u32, typ: DissolveType) {
         self.dissolve_duration_ms = duration_ms.max(1);
         self.dissolve_elapsed_ms = 0;
         self.dissolve_type = typ;
-        self.dissolve_alpha = 0.0;
+        // A mask dissolve starts covered by the previous frame.
+        self.dissolve_alpha = match typ {
+            DissolveType::MaskFadeIn | DissolveType::MaskFadeInOut => 1.0,
+            _ => 0.0,
+        };
+        self.dissolve_serial = self.dissolve_serial.wrapping_add(1);
+    }
+
+    pub fn get_dissolve_serial(&self) -> u32 {
+        self.dissolve_serial
     }
 
     pub fn tick_dissolve(&mut self, elapsed_ms: u32) {
@@ -919,7 +1038,8 @@ impl MotionManager {
         self.dissolve_alpha = match typ {
             DissolveType::ColoredFadeIn | DissolveType::MaskFadeIn => 1.0 - t,
             DissolveType::ColoredFadeOut | DissolveType::MaskFadeOut => t,
-            DissolveType::MaskFadeInOut => 1.0 - (2.0 * t - 1.0).abs(),
+            // Both mask dissolves (wait=4/5) wipe the frame shown when they started away.
+            DissolveType::MaskFadeInOut => 1.0 - t,
             _ => t,
         };
 
@@ -1022,8 +1142,9 @@ impl MotionManager {
         fonts: &crate::subsystem::resources::text_manager::FontEnumerator,
         force: bool,
     ) {
+        let fading = self.text_slots_with_active_fadeout();
         for slot in 0..32 {
-            let _ = self.text_upload_slot(slot, fonts, force);
+            let _ = self.text_upload_slot_unless_fading(slot, fonts, force, fading);
         }
     }
 
@@ -1033,20 +1154,34 @@ impl MotionManager {
         fonts: &crate::subsystem::resources::text_manager::FontEnumerator,
         force_render: bool,
     ) -> anyhow::Result<()> {
+        let fading = self.text_slots_with_active_fadeout();
+        self.text_upload_slot_unless_fading(slot, fonts, force_render, fading)
+    }
+
+    fn text_upload_slot_unless_fading(
+        &mut self,
+        slot: i32,
+        fonts: &crate::subsystem::resources::text_manager::FontEnumerator,
+        force_render: bool,
+        fading: u32,
+    ) -> anyhow::Result<()> {
         if !(0..32).contains(&slot) {
             return Ok(());
         }
-        if self.text_slot_has_active_fadeout_alpha(slot) {
+        if fading & (1 << slot) != 0 {
             return Ok(());
         }
 
         let graph_id: u16 = 4064u16 + slot as u16;
+        let t = crate::perf::start();
         let update = self.text_manager.rasterize_slot_if_needed(
             slot,
             fonts,
             &self.gaiji_manager,
             force_render,
-        )?;
+        );
+        crate::perf::stop(15, t);
+        let update = update?;
 
         match update {
             None => return Ok(()),
@@ -1249,11 +1384,16 @@ impl MotionManager {
         self.prim_manager.apply_snapshot_v1(&snap.prim_manager);
 
         // Reset textures, then apply snapshots.
-        if self.textures.len() != 4096 {
-            self.textures = vec![GraphBuff::new(); 4096];
-        }
-        for gb in &mut self.textures {
-            gb.unload();
+        #[cfg(feature = "psx")]
+        self.textures.clear();
+        #[cfg(not(feature = "psx"))]
+        {
+            if self.textures.len() != 4096 {
+                self.textures = vec![GraphBuff::new(); 4096];
+            }
+            for gb in &mut self.textures {
+                gb.unload();
+            }
         }
         for t in &snap.textures {
             let id = t.id as usize;

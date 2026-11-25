@@ -1,4 +1,6 @@
+use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::error::{RfvpError, RfvpResult};
@@ -57,6 +59,48 @@ pub trait RfvpFile {
     }
 }
 
+impl<F: RfvpFile + ?Sized> RfvpFile for Box<F> {
+    fn len(&mut self) -> RfvpResult<u64> {
+        (**self).len()
+    }
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> RfvpResult<usize> {
+        (**self).read_at(offset, buf)
+    }
+}
+
+/// Whole-file storage for the player's own data (saves), shared with the game state.
+///
+/// Paths are relative to the game's directory, with `/` separators (`save/rfvp_s000.bin`);
+/// `write` creates the directories it needs. A host that cannot persist anything simply does not
+/// provide one (see [`RfvpFileSystem::storage`]) and saves stay in memory for the session.
+pub trait RfvpStorage: Send + Sync {
+    fn read(&self, path: &str) -> RfvpResult<Vec<u8>>;
+
+    /// The first `max_len` bytes of the file (all of it if it is shorter). Reading just the head
+    /// of a save is enough to list it, and saves can be over a megabyte.
+    fn read_prefix(&self, path: &str, max_len: usize) -> RfvpResult<Vec<u8>> {
+        let mut bytes = self.read(path)?;
+        bytes.truncate(max_len);
+        Ok(bytes)
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> RfvpResult<()>;
+
+    fn exists(&self, path: &str) -> bool;
+
+    fn remove(&self, path: &str) -> RfvpResult<()>;
+
+    /// Names (not paths) of the files directly inside `dir`.
+    fn list(&self, dir: &str) -> RfvpResult<Vec<String>>;
+
+    /// Open a file to read parts of it on demand. A host that can should implement this: packs
+    /// and large loose assets (songs, movies) are then streamed instead of read whole.
+    fn open(&self, _path: &str) -> RfvpResult<Box<dyn RfvpFile + Send>> {
+        Err(RfvpError::Unsupported)
+    }
+}
+
 pub trait RfvpFileSystem {
     /// A Host runtime may retain a pack file and read it from an audio worker.
     #[cfg(feature = "host-runtime")]
@@ -76,6 +120,25 @@ pub trait RfvpFileSystem {
 
     fn write_all(&mut self, _path: &str, _bytes: &[u8]) -> RfvpResult<()> {
         Err(RfvpError::Unsupported)
+    }
+
+    /// Storage for the player's saves, if this host can persist them.
+    fn storage(&mut self) -> Option<Arc<dyn RfvpStorage>> {
+        None
+    }
+
+    /// The platform's own data directory, where each game gets a folder for its saves
+    /// (`saves/<game>/`), so that putting another game in the game directory loses nothing. A
+    /// host without one keeps the saves in the game directory (`storage`).
+    fn save_storage(&mut self) -> Option<Arc<dyn RfvpStorage>> {
+        None
+    }
+
+    /// Read access to the game's own directory, for assets that are loose files instead of in a
+    /// pack (a folder such as `graph/` next to the `.bin` files). Paths are relative to the
+    /// game directory.
+    fn game_files(&mut self) -> Option<Arc<dyn RfvpStorage>> {
+        None
     }
 
     fn metadata(&mut self, path: &str) -> RfvpResult<RfvpFileInfo>;
@@ -115,19 +178,63 @@ impl RfvpAssetPath {
     }
 }
 
+/// A directory inside another storage: every path is taken relative to `prefix`.
+pub struct SubdirStorage {
+    inner: Arc<dyn RfvpStorage>,
+    prefix: String,
+}
+
+impl SubdirStorage {
+    pub fn new(inner: Arc<dyn RfvpStorage>, prefix: &str) -> Self {
+        Self {
+            inner,
+            prefix: String::from(prefix.trim_matches('/')),
+        }
+    }
+
+    fn path(&self, path: &str) -> String {
+        let path = path.trim_start_matches('/');
+        if path.is_empty() {
+            self.prefix.clone()
+        } else {
+            alloc::format!("{}/{}", self.prefix, path)
+        }
+    }
+}
+
+impl RfvpStorage for SubdirStorage {
+    fn read(&self, path: &str) -> RfvpResult<Vec<u8>> {
+        self.inner.read(&self.path(path))
+    }
+
+    fn read_prefix(&self, path: &str, max_len: usize) -> RfvpResult<Vec<u8>> {
+        self.inner.read_prefix(&self.path(path), max_len)
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> RfvpResult<()> {
+        self.inner.write(&self.path(path), bytes)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.inner.exists(&self.path(path))
+    }
+
+    fn remove(&self, path: &str) -> RfvpResult<()> {
+        self.inner.remove(&self.path(path))
+    }
+
+    fn list(&self, dir: &str) -> RfvpResult<Vec<String>> {
+        self.inner.list(&self.path(dir))
+    }
+
+    fn open(&self, path: &str) -> RfvpResult<Box<dyn RfvpFile + Send>> {
+        self.inner.open(&self.path(path))
+    }
+}
+
 /// A seekable file retained by the runtime or its media consumers.
 #[cfg(feature = "host-runtime")]
 pub type RfvpAssetFile = alloc::boxed::Box<dyn RfvpFile + Send>;
-
-#[cfg(feature = "host-runtime")]
-impl RfvpFile for RfvpAssetFile {
-    fn len(&mut self) -> RfvpResult<u64> {
-        (**self).len()
-    }
-    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> RfvpResult<usize> {
-        (**self).read_at(offset, buf)
-    }
-}
 
 /// Read-only project namespace. Paths use forward slashes and are relative to
 /// the project. Enumeration yields paths accepted by `open`.
@@ -135,6 +242,10 @@ impl RfvpFile for RfvpAssetFile {
 pub trait RfvpAssetSource: Send + Sync {
     fn open(&self, path: &str) -> RfvpResult<RfvpAssetFile>;
     fn metadata(&self, path: &str) -> RfvpResult<RfvpFileInfo>;
+    fn list_files(&self, _dir: &str) -> RfvpResult<Vec<String>> {
+        Err(RfvpError::Unsupported)
+    }
+
     fn enumerate(
         &self,
         root: &str,

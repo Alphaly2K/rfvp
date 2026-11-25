@@ -300,15 +300,11 @@ pub fn prim_set_rs(
         None => cur_rot,
     };
 
+    // The original clamps an int scale to [100, 10000] (it never resets it) and leaves the
+    // scale alone otherwise.
     let scale = match scale.as_int() {
-        Some(s) => s,
+        Some(s) => s.clamp(100, 10000),
         None => cur_fx,
-    };
-
-    let scale = if !(0..=10000).contains(&scale) {
-        1000
-    } else {
-        scale
     };
 
     game_data
@@ -373,25 +369,16 @@ pub fn prim_set_rs2(
         None => cur_rot,
     };
 
+    // The original clamps each int scale to [100, 10000] (it never resets them) and leaves
+    // the scale alone otherwise.
     let scale_x = match scale_x.as_int() {
-        Some(s) => s,
+        Some(s) => s.clamp(100, 10000),
         None => cur_fx,
     };
 
     let scale_y = match scale_y.as_int() {
-        Some(s) => s,
+        Some(s) => s.clamp(100, 10000),
         None => cur_fy,
-    };
-
-    let scale_x = if !(0..=10000).contains(&scale_x) {
-        1000
-    } else {
-        scale_x
-    };
-    let scale_y = if !(0..=10000).contains(&scale_y) {
-        1000
-    } else {
-        scale_y
     };
 
     game_data
@@ -443,13 +430,10 @@ pub fn prim_set_snow(
         return Ok(Variant::Nil);
     }
 
-    let mut x = x.as_int().unwrap_or(0);
-    let mut y = y.as_int().unwrap_or(0);
+    let x = x.as_int().unwrap_or(0);
+    let y = y.as_int().unwrap_or(0);
     #[cfg(feature = "old_school")]
-    {
-        x = scale_i32(game_data, x);
-        y = scale_i32(game_data, y);
-    }
+    let (x, y) = (scale_i32(game_data, x), scale_i32(game_data, y));
 
     game_data
         .motion_manager
@@ -514,13 +498,10 @@ pub fn prim_set_sprt(
         return Ok(Variant::Nil);
     }
 
-    let mut x = x.as_int().unwrap_or(0);
-    let mut y = y.as_int().unwrap_or(0);
+    let x = x.as_int().unwrap_or(0);
+    let y = y.as_int().unwrap_or(0);
     #[cfg(feature = "old_school")]
-    {
-        x = scale_i32(game_data, x);
-        y = scale_i32(game_data, y);
-    }
+    let (x, y) = (scale_i32(game_data, x), scale_i32(game_data, y));
 
     game_data
         .motion_manager
@@ -590,13 +571,10 @@ pub fn prim_set_text(
         return Ok(Variant::Nil);
     }
 
-    let mut x = x.as_int().unwrap_or(0);
-    let mut y = y.as_int().unwrap_or(0);
+    let x = x.as_int().unwrap_or(0);
+    let y = y.as_int().unwrap_or(0);
     #[cfg(feature = "old_school")]
-    {
-        x = scale_i32(game_data, x);
-        y = scale_i32(game_data, y);
-    }
+    let (x, y) = (scale_i32(game_data, x), scale_i32(game_data, y));
 
     game_data
         .motion_manager
@@ -633,7 +611,8 @@ pub fn prim_set_tile(
     // - initializes prim as Tile
     // - defaults: tile=255, x/y/w/h=0, alpha=255, blend=0
     // - for each arg, only applies if the Variant type is integer
-    // - tile is accepted in range [-1, 255] (where -1 behaves as 255 in later u8 usage)
+    // - tile is accepted in range [-1, 255]; -1 draws with the globals-backed window colour
+    //   (ColorManager::tile_color)
     let id = match id.as_int() {
         Some(id) => id,
         None => {
@@ -659,17 +638,17 @@ pub fn prim_set_tile(
         .prim_manager
         .prim_set_alpha(id, 255);
     game_data.motion_manager.prim_manager.prim_set_blend(id, 0);
-    let mut x = x.as_int().unwrap_or(0);
-    let mut y = y.as_int().unwrap_or(0);
-    let mut w = w.as_int().unwrap_or(0);
-    let mut h = h.as_int().unwrap_or(0);
+    let x = x.as_int().unwrap_or(0);
+    let y = y.as_int().unwrap_or(0);
+    let w = w.as_int().unwrap_or(0);
+    let h = h.as_int().unwrap_or(0);
     #[cfg(feature = "old_school")]
-    {
-        x = scale_i32(game_data, x);
-        y = scale_i32(game_data, y);
-        w = scale_i32(game_data, w);
-        h = scale_i32(game_data, h);
-    }
+    let (x, y, w, h) = (
+        scale_i32(game_data, x),
+        scale_i32(game_data, y),
+        scale_i32(game_data, w),
+        scale_i32(game_data, h),
+    );
     game_data.motion_manager.prim_manager.prim_set_pos(id, x, y);
     game_data
         .motion_manager
@@ -706,7 +685,7 @@ pub fn prim_set_uv(
         return Ok(Variant::Nil);
     }
 
-    let mut u = match u.as_int() {
+    let u = match u.as_int() {
         Some(u) => u,
         None => {
             log::error!("prim_set_uv: invalid u : {:?}", u);
@@ -714,7 +693,7 @@ pub fn prim_set_uv(
         }
     };
 
-    let mut v = match v.as_int() {
+    let v = match v.as_int() {
         Some(v) => v,
         None => {
             log::error!("prim_set_uv: invalid v : {:?}", v);
@@ -722,10 +701,7 @@ pub fn prim_set_uv(
         }
     };
     #[cfg(feature = "old_school")]
-    {
-        u = scale_i32(game_data, u);
-        v = scale_i32(game_data, v);
-    }
+    let (u, v) = (scale_i32(game_data, u), scale_i32(game_data, v));
 
     game_data.motion_manager.prim_manager.prim_set_uv(id, u, v);
     game_data.motion_manager.prim_manager.prim_add_attr(id, 1);
@@ -756,7 +732,7 @@ pub fn prim_set_xy(
         return Ok(Variant::Nil);
     }
 
-    let mut x = if !x.is_nil() {
+    let x = if !x.is_nil() {
         match x.as_int() {
             Some(x) => x,
             None => {
@@ -773,7 +749,7 @@ pub fn prim_set_xy(
             .into()
     };
 
-    let mut y = if !y.is_nil() {
+    let y = if !y.is_nil() {
         match y.as_int() {
             Some(y) => y,
             None => {
@@ -790,10 +766,7 @@ pub fn prim_set_xy(
             .into()
     };
     #[cfg(feature = "old_school")]
-    {
-        x = scale_i32(game_data, x);
-        y = scale_i32(game_data, y);
-    }
+    let (x, y) = (scale_i32(game_data, x), scale_i32(game_data, y));
 
     game_data.motion_manager.prim_manager.prim_set_pos(id, x, y);
     game_data
@@ -823,7 +796,7 @@ pub fn prim_set_wh(
         return Ok(Variant::Nil);
     }
 
-    let mut w = if !w.is_nil() {
+    let w = if !w.is_nil() {
         match w.as_int() {
             Some(w) => w,
             None => {
@@ -840,7 +813,7 @@ pub fn prim_set_wh(
             .into()
     };
 
-    let mut h = if !h.is_nil() {
+    let h = if !h.is_nil() {
         match h.as_int() {
             Some(h) => h,
             None => {
@@ -857,10 +830,7 @@ pub fn prim_set_wh(
             .into()
     };
     #[cfg(feature = "old_school")]
-    {
-        w = scale_i32(game_data, w);
-        h = scale_i32(game_data, h);
-    }
+    let (w, h) = (scale_i32(game_data, w), scale_i32(game_data, h));
 
     game_data
         .motion_manager
@@ -891,7 +861,7 @@ pub fn prim_set_z(game_data: &mut GameData, id: &Variant, z: &Variant) -> Result
 
     // Reverse-engineered semantics (do not reorder prim tree here):
     // - If z is Int: clamp to [100, 10000], set prim.z, and enable attr bit 0x04.
-    // - If z is Float: do NOT change prim.z, but still enable attr bit 0x04.
+    // - If z is True: do NOT change prim.z, but still enable attr bit 0x04.
     // - Otherwise: disable attr bit 0x04.
     // In all cases, mark dirty via attr bit 0x40.
 
@@ -909,7 +879,7 @@ pub fn prim_set_z(game_data: &mut GameData, id: &Variant, z: &Variant) -> Result
         return Ok(Variant::Nil);
     }
 
-    if z.as_float().is_some() {
+    if matches!(z, Variant::True) {
         game_data
             .motion_manager
             .prim_manager
@@ -988,6 +958,15 @@ pub fn graph_load(game_data: &mut GameData, id: &Variant, path: &Variant) -> Res
 
     match path {
         Variant::String(path) | Variant::ConstString(path, _) => {
+            #[cfg(feature = "psx")]
+            {
+                let scale = game_data.old_school_scale();
+                if game_data.motion_manager.load_streamed_graph(id as u16, path, &game_data.vfs, scale)?
+                {
+                    game_data.motion_manager.refresh_prims(id as u16);
+                    return Ok(Variant::Nil);
+                }
+            }
             let buff = game_data.vfs_load_file(path)?;
             #[cfg(feature = "old_school")]
             {
@@ -1076,7 +1055,7 @@ pub fn graph_rgb(
 
     game_data
         .motion_manager
-        .graph_color_tone(id as u16, r, g, b);
+        .graph_color_tone(id as u16, r, g, b, &game_data.vfs);
 
     Ok(Variant::Nil)
 }
@@ -1146,7 +1125,7 @@ pub fn gaiji_load(
 ///
 pub struct PrimExitGroup;
 impl Syscaller for PrimExitGroup {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_exit_group(game_data, super::get_var!(args, 0))
     }
 }
@@ -1169,7 +1148,7 @@ unsafe impl Sync for PrimExitGroup {}
 ///   PrimGroupIn(10, 5)  // Make primitive 10 a child of primitive 5
 pub struct PrimGroupIn;
 impl Syscaller for PrimGroupIn {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_group_in(
             game_data,
             super::get_var!(args, 0),
@@ -1215,7 +1194,7 @@ unsafe impl Sync for PrimGroupIn {}
 /// ```
 pub struct PrimGroupMove;
 impl Syscaller for PrimGroupMove {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_group_move(
             game_data,
             super::get_var!(args, 0),
@@ -1239,7 +1218,7 @@ unsafe impl Sync for PrimGroupMove {}
 ///   PrimGroupOut(10)  // Removes primitive 10 from the hierarchy
 pub struct PrimGroupOut;
 impl Syscaller for PrimGroupOut {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_group_out(game_data, super::get_var!(args, 0))
     }
 }
@@ -1261,7 +1240,7 @@ unsafe impl Sync for PrimGroupOut {}
 ///
 pub struct PrimSetNull;
 impl Syscaller for PrimSetNull {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_null(game_data, super::get_var!(args, 0))
     }
 }
@@ -1284,7 +1263,7 @@ unsafe impl Sync for PrimSetNull {}
 ///
 pub struct PrimSetAlpha;
 impl Syscaller for PrimSetAlpha {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_alpha(
             game_data,
             super::get_var!(args, 0),
@@ -1311,7 +1290,7 @@ unsafe impl Sync for PrimSetAlpha {}
 ///
 pub struct PrimSetBlend;
 impl Syscaller for PrimSetBlend {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_blend(
             game_data,
             super::get_var!(args, 0),
@@ -1330,7 +1309,7 @@ unsafe impl Sync for PrimSetBlend {}
 ///
 pub struct PrimSetDraw;
 impl Syscaller for PrimSetDraw {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_draw(
             game_data,
             super::get_var!(args, 0),
@@ -1360,7 +1339,7 @@ unsafe impl Sync for PrimSetDraw {}
 ///
 pub struct PrimSetOP;
 impl Syscaller for PrimSetOP {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_op(
             game_data,
             super::get_var!(args, 0),
@@ -1393,7 +1372,7 @@ unsafe impl Sync for PrimSetOP {}
 ///
 pub struct PrimSetRS;
 impl Syscaller for PrimSetRS {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_rs(
             game_data,
             super::get_var!(args, 0),
@@ -1427,7 +1406,7 @@ unsafe impl Sync for PrimSetRS {}
 ///
 pub struct PrimSetRS2;
 impl Syscaller for PrimSetRS2 {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_rs2(
             game_data,
             super::get_var!(args, 0),
@@ -1443,7 +1422,7 @@ unsafe impl Sync for PrimSetRS2 {}
 
 pub struct PrimSetSnow;
 impl Syscaller for PrimSetSnow {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_snow(
             game_data,
             super::get_var!(args, 0),
@@ -1482,7 +1461,7 @@ unsafe impl Sync for PrimSetSnow {}
 ///
 pub struct PrimSetSprt;
 impl Syscaller for PrimSetSprt {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_sprt(
             game_data,
             super::get_var!(args, 0),
@@ -1521,7 +1500,7 @@ unsafe impl Sync for PrimSetSprt {}
 ///
 pub struct PrimSetText;
 impl Syscaller for PrimSetText {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_text(
             game_data,
             super::get_var!(args, 0),
@@ -1564,7 +1543,7 @@ unsafe impl Sync for PrimSetText {}
 ///
 pub struct PrimSetTile;
 impl Syscaller for PrimSetTile {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_tile(
             game_data,
             super::get_var!(args, 0),
@@ -1605,7 +1584,7 @@ unsafe impl Sync for PrimSetTile {}
 ///
 pub struct PrimSetUV;
 impl Syscaller for PrimSetUV {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_uv(
             game_data,
             super::get_var!(args, 0),
@@ -1620,7 +1599,7 @@ unsafe impl Sync for PrimSetUV {}
 
 pub struct PrimSetXY;
 impl Syscaller for PrimSetXY {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_xy(
             game_data,
             super::get_var!(args, 0),
@@ -1680,7 +1659,7 @@ unsafe impl Sync for PrimSetXY {}
 // - This rectangle is then mapped to the sprite on screen.
 pub struct PrimSetWH;
 impl Syscaller for PrimSetWH {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_wh(
             game_data,
             super::get_var!(args, 0),
@@ -1711,7 +1690,7 @@ unsafe impl Sync for PrimSetWH {}
 ///
 pub struct PrimSetZ;
 impl Syscaller for PrimSetZ {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_set_z(
             game_data,
             super::get_var!(args, 0),
@@ -1733,7 +1712,7 @@ unsafe impl Sync for PrimSetZ {}
 ///
 pub struct PrimHit;
 impl Syscaller for PrimHit {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         prim_hit(
             game_data,
             super::get_var!(args, 0),
@@ -1754,7 +1733,7 @@ unsafe impl Sync for PrimHit {}
 ///
 pub struct GraphLoad;
 impl Syscaller for GraphLoad {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         graph_load(
             game_data,
             super::get_var!(args, 0),
@@ -1813,7 +1792,7 @@ unsafe impl Sync for GraphLoad {}
 ///    0 ┤##
 pub struct GraphRGB;
 impl Syscaller for GraphRGB {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         graph_rgb(
             game_data,
             super::get_var!(args, 0),
@@ -1850,7 +1829,7 @@ unsafe impl Sync for GraphRGB {}
 /// ```
 pub struct GaijiLoad;
 impl Syscaller for GaijiLoad {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         gaiji_load(
             game_data,
             super::get_var!(args, 0),

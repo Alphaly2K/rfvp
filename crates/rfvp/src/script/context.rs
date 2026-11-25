@@ -94,6 +94,11 @@ impl Context {
     pub fn new(start_addr: u32, id: u32) -> Self {
         let mut ctx = Context {
             id,
+            // The PlayStation grows each thread's stack as it is used (see `grow_to`): 32 full
+            // stacks are 190 KiB of its 2 MiB, and most threads never run.
+            #[cfg(feature = "psx")]
+            stack: Vec::new(),
+            #[cfg(not(feature = "psx"))]
             stack: vec![Variant::Nil; MAX_STACK_SIZE],
             cursor: start_addr as usize,
             cur_stack_pos: 0,
@@ -154,7 +159,7 @@ impl Context {
         self.should_break = snap.should_break;
 
         // Ensure stack capacity matches runtime expectations.
-        if self.stack.len() < MAX_STACK_SIZE {
+        if self.stack.len() < MAX_STACK_SIZE && !cfg!(feature = "psx") {
             self.stack.resize(MAX_STACK_SIZE, Variant::Nil);
         } else if self.stack.len() > MAX_STACK_SIZE {
             self.stack.truncate(MAX_STACK_SIZE);
@@ -183,10 +188,23 @@ impl Context {
         Ok(base as usize)
     }
 
+    /// Make the stack reach slot `pos` (the PlayStation's stacks grow; elsewhere they are full
+    /// from the start).
+    #[inline]
+    fn grow_to(&mut self, pos: usize) {
+        #[cfg(feature = "psx")]
+        if pos >= self.stack.len() && pos < MAX_STACK_SIZE {
+            self.stack.resize((pos + 16).min(MAX_STACK_SIZE), Variant::Nil);
+        }
+        #[cfg(not(feature = "psx"))]
+        let _ = pos;
+    }
+
     /// push a value onto the stack and increment the stack pointer
     fn push(&mut self, value: Variant) -> Result<()> {
         let pos = self.to_global_offset();
         if let Ok(pos) = pos {
+            self.grow_to(pos);
             if pos >= self.stack.len() {
                 bail!("push: stack is unable to grow to the position: {}", pos);
             } else {
@@ -212,9 +230,9 @@ impl Context {
                 let msg = format!("pop: stack pointer out of bounds: {:x}", self.cursor);
                 bail!(msg);
             }
-            let r = self.stack[pos].clone();
-            self.stack[pos].set_nil();
-            r
+            // Pop transfers ownership; cloning strings and tables here costs both
+            // allocations and CPU time before immediately discarding the original.
+            core::mem::replace(&mut self.stack[pos], Variant::Nil)
         } else {
             bail!("stack pointer out of bounds");
         };
@@ -246,6 +264,10 @@ impl Context {
             bail!("stack pointer out of bounds");
         }
 
+        // A slot the stack has not grown to yet holds Nil.
+        if cfg!(feature = "psx") && off as usize >= self.stack.len() {
+            return Ok(Variant::Nil);
+        }
         let var = self
             .stack
             .get(off as usize)
@@ -271,6 +293,7 @@ impl Context {
             bail!("stack pointer out of bounds");
         }
 
+        self.grow_to(off as usize);
         let var = self
             .stack
             .get_mut(off as usize)
@@ -295,6 +318,10 @@ impl Context {
             bail!("stack pointer out of bounds");
         }
 
+        self.grow_to(off as usize);
+        if off as usize >= self.stack.len() {
+            bail!("stack pointer out of bounds");
+        }
         self.stack[off as usize] = value;
 
         Ok(())
@@ -304,7 +331,7 @@ impl Context {
         log::error!("thread id : {}", self.id);
         log::error!("pc: {:x}", self.cursor);
         if let Ok(offset) = self.to_global_offset() {
-            let slice = &self.stack[0..offset + 1];
+            let slice = &self.stack[0..(offset + 1).min(self.stack.len())];
             log::error!("stack: {:?}", slice);
         }
     }
@@ -399,6 +426,9 @@ impl Context {
                 syscall.name,
                 syscall.args
             );
+            #[cfg(feature = "psx")]
+            let mut args = Vec::with_capacity(usize::from(syscall.args));
+            #[cfg(not(feature = "psx"))]
             let mut args = Vec::new();
             for _ in 0..syscall.args {
                 uefi_context_stage!("[UEFI] Context::syscall before pop arg");
@@ -413,8 +443,11 @@ impl Context {
                 syscall.name
             );
 
-            #[cfg(not(feature = "no_std"))]
-            crate::trace::syscall(format_args!("syscall: {} {:?}", &syscall.name, &args));
+            crate::trace::syscall(format_args!(
+                "syscall: t{} {} {:?}",
+                self.id, &syscall.name, &args
+            ));
+            let started = crate::perf::start();
             let result = match sys.do_syscall(syscall.name.as_str(), args) {
                 Ok(result) => result,
                 Err(e) => {
@@ -426,8 +459,8 @@ impl Context {
                 "[UEFI] Context::syscall after do_syscall name={}",
                 syscall.name
             );
+            crate::perf::stop(20, started);
             self.return_value = result;
-            #[cfg(not(feature = "no_std"))]
             crate::trace::syscall(format_args!(
                 "syscall_ret: {} -> {:?}",
                 &syscall.name, &self.return_value
@@ -769,7 +802,7 @@ impl Context {
             return Ok(());
         };
 
-        if let Some(dst) = GLOBAL.lock().unwrap().get_mut(key) {
+        if let Some(dst) = GLOBAL.lock().unwrap().slot_mut(key) {
             if !dst.is_table() {
                 dst.cast_table();
             }
@@ -827,11 +860,10 @@ impl Context {
     pub fn add(&mut self) -> Result<()> {
         self.cursor += 1;
         let b = self.pop()?;
-        let mut a = self.pop()?;
+        let a = self.pop()?;
 
         // log::info!("add: {:?} {:?}", &a, &b);
-        a.vadd(&b);
-        self.push(a)?;
+        self.push(super::vm_add(a, b))?;
         Ok(())
     }
 
@@ -840,11 +872,10 @@ impl Context {
     pub fn sub(&mut self) -> Result<()> {
         self.cursor += 1;
         let b = self.pop()?;
-        let mut a = self.pop()?;
+        let a = self.pop()?;
 
         // log::info!("sub: {:?} {:?}", &a, &b);
-        a.vsub(&b);
-        self.push(a)?;
+        self.push(super::vm_sub(a, b))?;
         Ok(())
     }
 
@@ -853,11 +884,10 @@ impl Context {
     pub fn mul(&mut self) -> Result<()> {
         self.cursor += 1;
         let b = self.pop()?;
-        let mut a = self.pop()?;
+        let a = self.pop()?;
 
         // log::info!("mul: {:?} {:?}", &a, &b);
-        a.vmul(&b);
-        self.push(a)?;
+        self.push(super::vm_mul(a, b))?;
         Ok(())
     }
 
@@ -866,11 +896,10 @@ impl Context {
     pub fn div(&mut self) -> Result<()> {
         self.cursor += 1;
         let b = self.pop()?;
-        let mut a = self.pop()?;
+        let a = self.pop()?;
 
         // log::info!("div: {:?} {:?}", &a, &b);
-        a.vdiv(&b);
-        self.push(a)?;
+        self.push(super::vm_div(a, b))?;
         Ok(())
     }
 
@@ -879,11 +908,10 @@ impl Context {
     pub fn modulo(&mut self) -> Result<()> {
         self.cursor += 1;
         let b = self.pop()?;
-        let mut a = self.pop()?;
+        let a = self.pop()?;
 
         // log::info!("mod: {:?} {:?}", &a, &b);
-        a.vmod(&b);
-        self.push(a)?;
+        self.push(super::vm_mod(a, b))?;
         Ok(())
     }
 
@@ -1024,6 +1052,10 @@ impl Context {
         Ok(())
     }
 
+    pub fn get_id(&self) -> u32 {
+        self.id
+    }
+
     /// get the program counter
     pub fn get_pc(&self) -> usize {
         self.cursor
@@ -1078,7 +1110,18 @@ impl Context {
             "[UEFI] Context::dispatch_opcode before read pc={}",
             self.get_pc()
         );
+        let op_started = crate::perf::cycles();
+        #[cfg(test)]
+        page_trace::touch(self.get_pc() as u32 >> 10);
         let opcode = parser.read_u8(self.get_pc())? as i32;
+        #[cfg(test)]
+        {
+            if opcode == 0x01 {
+                page_trace::func(self.get_pc() as u32);
+            }
+            page_trace::pc(self.get_pc() as u32);
+        }
+        crate::perf::count_op();
         uefi_context_stage!(
             "[UEFI] Context::dispatch_opcode after read pc={} opcode={}",
             self.get_pc(),
@@ -1221,6 +1264,7 @@ impl Context {
             }
         };
 
+        crate::perf::op_cycles(opcode as u8, op_started);
         Ok(())
     }
 
@@ -1232,6 +1276,73 @@ impl Context {
             let local = self.stack.get(pos);
             log::info!("pos: {}, value: {:?}", pos, local);
             pos -= 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod stack_move_tests {
+    use super::*;
+    use alloc::string::String;
+
+    #[test]
+    fn pop_moves_owned_strings_and_clears_the_slot() {
+        let mut ctx = Context::new(0, 0);
+        let value = String::from("graph/title_start");
+        let pointer = value.as_ptr();
+        ctx.push(Variant::String(value)).unwrap();
+        let slot = ctx.cur_stack_base;
+        let popped = ctx.pop().unwrap();
+        assert_eq!(popped.as_string().unwrap().as_ptr(), pointer);
+        assert!(ctx.stack[slot].is_nil());
+        assert!(ctx.pop().is_err());
+    }
+
+    #[test]
+    fn owned_arithmetic_preserves_wrapping_and_string_concatenation() {
+        let mut ctx = Context::new(0, 0);
+        ctx.push(Variant::Int(i32::MAX)).unwrap();
+        ctx.push(Variant::Int(1)).unwrap();
+        ctx.add().unwrap();
+        assert_eq!(ctx.pop().unwrap().as_int(), Some(i32::MIN));
+        ctx.push(Variant::ConstString(String::from("graph/"), 1)).unwrap();
+        ctx.push(Variant::ConstString(String::from("title_start"), 2)).unwrap();
+        ctx.add().unwrap();
+        assert_eq!(ctx.pop().unwrap().as_string().unwrap(), "graph/title_start");
+    }
+}
+
+/// Test-only: the 1 KiB script pages instructions run from, in order (consecutive repeats
+/// dropped), for sizing the PlayStation's script cache (see `no_std_harness`).
+#[cfg(test)]
+pub mod page_trace {
+    extern crate std;
+    use std::sync::Mutex;
+    pub static PAGES: Mutex<std::vec::Vec<u32>> = Mutex::new(std::vec::Vec::new());
+
+
+    /// Script functions in the order they first ran (for the PlayStation's code layout).
+    pub static FUNCS: Mutex<std::vec::Vec<u32>> = Mutex::new(std::vec::Vec::new());
+
+    pub fn func(addr: u32) {
+        FUNCS.lock().unwrap().push(addr);
+    }
+
+    /// How many times each instruction ran, and when it first did (for the PlayStation's code
+    /// layout).
+    pub static PCS: Mutex<Option<std::collections::HashMap<u32, (u32, u32)>>> = Mutex::new(None);
+
+    pub fn pc(addr: u32) {
+        let mut pcs = PCS.lock().unwrap();
+        let pcs = pcs.get_or_insert_with(Default::default);
+        let next = pcs.len() as u32;
+        pcs.entry(addr).or_insert((0, next)).0 += 1;
+    }
+
+    pub fn touch(page: u32) {
+        let mut pages = PAGES.lock().unwrap();
+        if pages.last() != Some(&page) {
+            pages.push(page);
         }
     }
 }

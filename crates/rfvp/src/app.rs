@@ -260,11 +260,31 @@ impl App {
         }
     }
     fn current_hidpi_scale(&self) -> f32 {
-        self.window
-            .as_ref()
-            .map(|w| w.scale_factor() as f32)
-            .unwrap_or(self.native_scale_factor as f32)
-            .max(1.0)
+        match self.window.as_ref() {
+            Some(w) => (w.scale_factor() as f32).max(1.0),
+            None => self.host_presentation_scale(),
+        }
+    }
+
+    /// Pixel density actually needed by host-driven (iOS/Android) presentation.
+    ///
+    /// The virtual frame is letterboxed into the host drawable, so each virtual pixel covers
+    /// `min(surface / virtual)` device pixels. The platform scale (UIScreen.nativeScale,
+    /// DisplayMetrics.density) is usually much larger (e.g. 2.0 vs ~1.15 on an iPhone XR for a
+    /// 1280x720 game), and using it for text/render-target backing wastes ~3x memory, which is
+    /// enough to get the process killed by jetsam on low-RAM devices.
+    fn host_presentation_scale(&self) -> f32 {
+        let native = self.native_scale_factor as f32;
+        let native = if native.is_finite() { native.max(1.0) } else { 1.0 };
+        let sw = self.surface_config.width.max(1) as f32;
+        let sh = self.surface_config.height.max(1) as f32;
+        let vw = self.virtual_size.0.max(1) as f32;
+        let vh = self.virtual_size.1.max(1) as f32;
+        let fit = (sw / vw).min(sh / vh);
+        if !fit.is_finite() {
+            return native;
+        }
+        fit.clamp(1.0, native)
     }
 
     fn desired_render_target_backing_size(&self) -> (u32, u32) {
@@ -386,6 +406,7 @@ impl App {
                         // );
                     }
                     WindowEvent::RedrawRequested => {
+                        self.mem_report();
                         // Drive the simulation from redraws so we do not busy-spin.
                         // The VM is cooperative and now advances until script/syscall yield points
                         // such as WAIT/SLEEP/NEXT/ShouldBreak, matching the original engine style.
@@ -576,16 +597,61 @@ impl App {
         });
     }
 
+    /// With `RFVP_MEM_REPORT=1`, the memory the frame holds, to stderr every 300 redraws: GPU
+    /// textures and render targets, and the CPU copies of pictures.
+    fn mem_report(&mut self) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static REDRAWS: AtomicU32 = AtomicU32::new(0);
+        if REDRAWS.fetch_add(1, Ordering::Relaxed) % 300 != 0
+            || std::env::var_os("RFVP_MEM_REPORT").is_none()
+        {
+            return;
+        }
+        use crate::rfvp_render::mem_stats as m;
+        let (mut cpu_images, mut cpu_bytes, mut masks) = (0u64, 0u64, 0u64);
+        {
+            let gd = gd_read(&self.game_data);
+            for g in gd.motion_manager.graphs().iter() {
+                if let Some(img) = g.texture.as_ref() {
+                    let (w, h) = image::GenericImageView::dimensions(img);
+                    cpu_images += 1;
+                    cpu_bytes += w as u64 * h as u64 * 4;
+                }
+                if g.is_cpu_evicted() {
+                    masks += 1;
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let metal = unsafe {
+            self.resources.device.as_hal::<wgpu::hal::api::Metal, _, _>(|device| {
+                device.map(|d| d.raw_device().lock().current_allocated_size() >> 20)
+            })
+        }
+        .flatten()
+        .unwrap_or(0);
+        #[cfg(not(target_os = "macos"))]
+        let metal = 0u64;
+        eprintln!(
+            "mem: metal device {} MiB, gpu textures {} ({} MiB, {} made, {} MiB written), render targets {} ({} MiB), cpu images {} ({} MiB), evicted {}",
+            metal,
+            m::TEXTURES.load(Ordering::Relaxed),
+            m::TEXTURE_BYTES.load(Ordering::Relaxed) >> 20,
+            m::TEXTURES_MADE.load(Ordering::Relaxed),
+            m::TEXTURE_WRITES.load(Ordering::Relaxed) >> 20,
+            m::TARGETS.load(Ordering::Relaxed),
+            m::TARGET_BYTES.load(Ordering::Relaxed) >> 20,
+            cpu_images,
+            cpu_bytes >> 20,
+            masks,
+        );
+    }
+
     fn next_frame(&mut self) -> (u64, bool) {
         let mut notify_dissolve_done = false;
         let frame_ms: u64;
 
-        let text_render_scale = self
-            .window
-            .as_ref()
-            .map(|w| w.scale_factor() as f32)
-            .unwrap_or(self.native_scale_factor as f32)
-            .max(1.0);
+        let text_render_scale = self.current_hidpi_scale();
         let pending_exit_dialog = take_pending_exit_dialog_request();
         let pending_save_load = take_pending_save_load_request();
 
@@ -857,6 +923,15 @@ impl App {
             for graph_id in gd.motion_manager.take_pending_gpu_graph_unloads() {
                 self.prim_renderer.remove_graph_cache(graph_id);
             }
+            // Graphs whose CPU pixels were evicted must be re-decoded if the GPU copy went away.
+            {
+                let gd = &mut **gd;
+                let renderer = &self.prim_renderer;
+                gd.motion_manager
+                    .restore_evicted_cpu_pixels(&gd.vfs, |id, gen| {
+                        renderer.is_graph_uploaded(id, gen)
+                    });
+            }
             let surface_size = (self.surface_config.width, self.surface_config.height);
             self.legacy_save_load_ui.update(
                 &self.resources,
@@ -868,10 +943,41 @@ impl App {
                 .update(&self.resources, self.virtual_size, surface_size);
         }
 
+        // Save thumbnail: as in the original engine (SaveCreate(3) reads its render target back
+        // when called), the frame last shown, before the script's new state (a menu) is drawn.
+        let save_capture = gd_read(&self.game_data).save_manager.pending_save_capture();
+        let save_frame = save_capture.map(|_| {
+            let mut encoder = self.resources.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor { label: Some("rfvp save capture") },
+            );
+            let readback = self
+                .render_target
+                .encode_readback_rgba8(&self.resources.device, &mut encoder);
+            self.resources.queue.submit(Some(encoder.finish()));
+            let rgba = readback.map_to_rgba8(&self.resources.device);
+            (readback.width, readback.height, rgba)
+        });
+
         let dissolve_color: Option<glam::Vec4>;
         let dissolve2_color: Option<glam::Vec4>;
         {
             let gd = gd_read(&self.game_data);
+
+            // A mask dissolve that just started wipes away the frame last shown, which is still
+            // in the render target.
+            if self.prim_renderer.mask_wants_snapshot(&gd.motion_manager) {
+                let mut encoder = self.resources.device.create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor { label: Some("rfvp dissolve snapshot") },
+                );
+                let readback = self
+                    .render_target
+                    .encode_readback_rgba8(&self.resources.device, &mut encoder);
+                self.resources.queue.submit(Some(encoder.finish()));
+                let rgba = readback.map_to_rgba8(&self.resources.device);
+                if let Some(frame) = image::RgbaImage::from_raw(readback.width, readback.height, rgba) {
+                    self.prim_renderer.set_mask_snapshot(&gd.motion_manager, frame);
+                }
+            }
 
             // Build primitive draw list and upload any modified GraphBuffs to the GPU.
             self.prim_renderer
@@ -924,10 +1030,7 @@ impl App {
                     }
                 }
 
-                // Mask dissolve (wait=4/5/6) is not a solid color quad in the original engine.
-                // It uses the 8-bit mask texture with alpha-test / blend states.
-                // Until a dedicated mask dissolve pipeline is implemented, do not draw a solid
-                // overlay here (otherwise it appears as a "white mask" over HUD/text).
+                // The primitive renderer composites the 8-bit mask after root 0.
                 DissolveType::MaskFadeIn
                 | DissolveType::MaskFadeInOut
                 | DissolveType::MaskFadeOut => None,
@@ -950,11 +1053,14 @@ impl App {
             };
         }
 
-        // Save thumbnail capture request (resolved after the virtual pass).
-        let save_capture = {
-            let gd = gd_read(&self.game_data);
-            gd.save_manager.pending_save_capture()
-        };
+        // Drop CPU copies of file-backed images that are now resident on the GPU. On unified-memory
+        // devices (iOS/Android) the CPU copy otherwise doubles the memory cost of every image.
+        {
+            let mut gd = gd_write(&self.game_data);
+            let renderer = &self.prim_renderer;
+            gd.motion_manager
+                .evict_uploaded_cpu_pixels(|id, gen| renderer.is_graph_uploaded(id, gen));
+        }
 
         let mut encoder =
             self.resources
@@ -962,6 +1068,10 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("rfvp frame encoder"),
                 });
+
+        // Sprt texture id -1 draws the frame last shown, which is still in the render target.
+        self.prim_renderer
+            .capture_prev_frame(&self.resources, &mut encoder, &self.render_target);
 
         // Pass 1: render primitives into the virtual render target.
         {
@@ -1012,8 +1122,9 @@ impl App {
             );
         }
 
-        // If a SaveWrite is pending, capture the current virtual render target to CPU.
-        let save_readback = save_capture.map(|_| {
+        // `RFVP_DUMP_FRAMES`: the frame as rendered, for comparing renderers.
+        let dump_path = frame_dump_path(self.debug_frame_no);
+        let dump_readback = dump_path.as_ref().map(|_| {
             self.render_target
                 .encode_readback_rgba8(&self.resources.device, &mut encoder)
         });
@@ -1109,10 +1220,20 @@ impl App {
 
         self.resources.queue.submit(Some(encoder.finish()));
 
-        if let (Some(readback), Some((slot, thumb_w, thumb_h))) = (save_readback, save_capture) {
-            let src_w = readback.width.max(1);
-            let src_h = readback.height.max(1);
+        if let (Some(readback), Some(path)) = (dump_readback, dump_path) {
             let rgba = readback.map_to_rgba8(&self.resources.device);
+            match RgbaImage::from_raw(readback.width, readback.height, rgba) {
+                Some(img) => match img.save(&path) {
+                    Ok(()) => log::info!("frame dumped to {}", path.display()),
+                    Err(e) => log::warn!("frame dump to {} failed: {e}", path.display()),
+                },
+                None => log::warn!("frame dump: readback size mismatch"),
+            }
+        }
+
+        if let (Some((src_w, src_h, rgba)), Some((slot, thumb_w, thumb_h))) = (save_frame, save_capture) {
+            let src_w = src_w.max(1);
+            let src_h = src_h.max(1);
 
             let thumb_rgba = if thumb_w > 0 && thumb_h > 0 && (thumb_w != src_w || thumb_h != src_h)
             {
@@ -1134,6 +1255,8 @@ impl App {
 
             let mut gd = gd_write(&self.game_data);
             let nls = gd.get_nls();
+            gd.save_manager
+                .set_wall_time(Some(crate::utils::file::local_wall_time()));
             let state_snap = crate::subsystem::save_state::SaveStateSnapshotV1::capture(&mut gd);
 
             if slot == u32::MAX {
@@ -1420,19 +1543,37 @@ impl App {
         Ok(())
     }
     pub fn find_hcb(game_path: impl AsRef<Path>) -> Result<PathBuf> {
-        let mut path = game_path.as_ref().to_path_buf();
-        path.push("*.hcb");
+        let dir = game_path.as_ref().to_path_buf();
 
-        let matches: Vec<_> = glob::glob(&path.to_string_lossy())?.flatten().collect();
+        // Prefer translated BCH patch scripts (`*.bch`, same HCB container
+        // format, produced by CHS/CHT patches) and fall back to the original
+        // `*.hcb` script.
+        for pattern in ["*.bch", "*.hcb"] {
+            let mut path = dir.clone();
+            path.push(pattern);
 
-        if matches.is_empty() {
-            anyhow::bail!(
-                "No hcb file found in the game directory: {}",
-                game_path.as_ref().display()
-            );
+            let mut matches: Vec<_> = glob::glob(&path.to_string_lossy())?
+                .flatten()
+                // Skip macOS AppleDouble sidecars. `._name.hcb` matches the glob
+                // but is file metadata, not a script, and parsing one fails with
+                // a confusing "offset out of bounds". They appear on FAT/exFAT
+                // volumes and in directories macOS has touched.
+                .filter(|p| {
+                    !p.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("._"))
+                })
+                .collect();
+            matches.sort();
+            if let Some(found) = matches.first() {
+                return Ok(found.to_path_buf());
+            }
         }
 
-        Ok(matches[0].to_path_buf())
+        anyhow::bail!(
+            "No hcb/bch file found in the game directory: {}",
+            game_path.as_ref().display()
+        );
     }
 
     pub fn set_text_hidpi_enabled(&mut self, enabled: bool) {
@@ -1489,6 +1630,35 @@ impl App {
         gd.motion_manager
             .text_manager
             .submit_text_translation(serial, translated)
+    }
+
+    /// Toggle the system CJK fallback font stack at runtime.
+    ///
+    /// Host-driven platforms (Android/iOS) use this via their host ABI after
+    /// engine creation. Enabling triggers a one-shot system font scan.
+    pub fn set_system_font_fallback_enabled(&mut self, enabled: bool) {
+        let mut gd = gd_write(&self.game_data);
+        gd.fontface_manager
+            .set_system_font_fallback_enabled(enabled);
+        if enabled {
+            gd.fontface_manager.load_system_fallback_fonts();
+        }
+    }
+
+    /// Append a host-provided font file at runtime.
+    ///
+    /// Returns the new user font id (>= 0) or `None` when the file is
+    /// missing/invalid. Used by the Android host for user-selected fonts.
+    pub fn add_font_file(&mut self, path: &Path) -> Option<i32> {
+        let mut gd = gd_write(&self.game_data);
+        gd.fontface_manager.add_font_file(path)
+    }
+
+    /// Force a user font (by id from [`App::add_font_file`]) as the primary
+    /// font for all rendering; `None` restores the script-selected fonts.
+    pub fn set_forced_font(&mut self, id: Option<i32>) {
+        let mut gd = gd_write(&self.game_data);
+        gd.fontface_manager.set_forced_font(id);
     }
 
     /// Step the engine once in a host-driven environment (e.g. SwiftUI/UIKit on iOS).
@@ -1839,6 +2009,43 @@ impl App {
         }
     }
 
+    /// Inject a key event from an Android host.
+    ///
+    /// Key codes use Windows VK semantics (aligned with the Siglus host):
+    /// `0x1B` Escape, `0x0D` Enter, `0x20` Space, `0x25..0x28` arrows,
+    /// `0x11` Control. Unknown codes are ignored.
+    ///
+    /// `phase`: 0 = down, 1 = up.
+    #[cfg(target_os = "android")]
+    pub fn host_key_android(&mut self, vk_code: i32, phase: i32) {
+        use winit::keyboard::{Key, NamedKey};
+
+        let key = match vk_code {
+            0x1B => Key::Named(NamedKey::Escape),
+            0x0D => Key::Named(NamedKey::Enter),
+            0x20 => Key::Named(NamedKey::Space),
+            0x25 => Key::Named(NamedKey::ArrowLeft),
+            0x26 => Key::Named(NamedKey::ArrowUp),
+            0x27 => Key::Named(NamedKey::ArrowRight),
+            0x28 => Key::Named(NamedKey::ArrowDown),
+            0x11 => Key::Named(NamedKey::Control),
+            _ => return,
+        };
+
+        if self.exit_confirm_ui.is_active() || self.legacy_save_load_ui.is_active() {
+            return;
+        }
+
+        {
+            let mut gd = gd_write(&self.game_data);
+            match phase {
+                0 => gd.inputs_manager.notify_keydown(key, false),
+                1 => gd.inputs_manager.notify_keyup(key),
+                _ => {}
+            }
+        }
+    }
+
     /// Inject a single-finger touch event from an Android host.
     ///
     /// `phase`:
@@ -2108,9 +2315,20 @@ impl AppBuilder {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_vfs(mut self, nls: Nls) -> anyhow::Result<Self> {
-        self.world.vfs = crate::subsystem::resources::vfs::Vfs::new(nls)?;
+        self.world.vfs = crate::utils::file::desktop_vfs(nls)?;
+        self.world
+            .save_manager
+            .set_storage(Some(crate::utils::file::desktop_storage()));
         Ok(self)
+    }
+
+    /// The browser build has no game folder on disk; it hands over its files with
+    /// [`Self::with_wasm_vfs`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_vfs(self, _nls: Nls) -> anyhow::Result<Self> {
+        anyhow::bail!("the wasm build loads the game through with_wasm_vfs")
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -2232,7 +2450,9 @@ impl AppBuilder {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: swapchain_capabilities.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // One frame in flight: the layer keeps two drawables, not three (each 4K on a Retina
+            // screen, about 30 MiB); a visual novel loses nothing.
+            desired_maximum_frame_latency: 1,
         };
 
         surface.configure(&device, &config);
@@ -2584,7 +2804,8 @@ impl AppBuilder {
         self.world.nls = self.parser.nls.clone();
 
         let mut cursor_table = HashMap::new();
-        if let Ok(cursor_paths) = self.world.vfs.find_ani() {
+        {
+            let cursor_paths = crate::utils::file::find_loose_ani_cursors();
             let re = Regex::new(r"^([a-zA-Z_]+)(\d+)$").unwrap();
             for path in &cursor_paths {
                 // split cursor1.ani into `cursor` and `1`
@@ -3511,4 +3732,24 @@ mod tests {
         let hcb_path = App::find_hcb(filepath).unwrap();
         log::info!("{:?}", hcb_path);
     }
+}
+
+/// Where to write frame `frame`, if `RFVP_DUMP_FRAMES` (comma-separated frame numbers) asks for
+/// it. Files go in `RFVP_DUMP_DIR` (default: the working directory) as `frame_NNNNN.png`.
+#[cfg(not(target_arch = "wasm32"))]
+fn frame_dump_path(frame: u64) -> Option<std::path::PathBuf> {
+    let frames = std::env::var("RFVP_DUMP_FRAMES").ok()?;
+    if !frames
+        .split(',')
+        .any(|f| f.trim().parse::<u64>().ok() == Some(frame))
+    {
+        return None;
+    }
+    let dir = std::env::var("RFVP_DUMP_DIR").unwrap_or_else(|_| ".".into());
+    Some(std::path::Path::new(&dir).join(format!("frame_{frame:05}.png")))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn frame_dump_path(_frame: u64) -> Option<std::path::PathBuf> {
+    None
 }

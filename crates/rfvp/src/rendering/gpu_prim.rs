@@ -7,7 +7,7 @@ use crate::{
     rfvp_render::{
         pipelines::sprite::SpritePipeline,
         vertices::{PosColTexVertex, VertexSource},
-        GpuCommonResources, GpuTexture, TextureBindGroup, VertexBuffer,
+        GpuCommonResources, GpuTexture, RenderTarget, TextureBindGroup, VertexBuffer,
     },
     subsystem::resources::{
         color_manager::ColorManager,
@@ -24,11 +24,16 @@ use crate::subsystem::resources::{
 enum DrawTextureKey {
     Graph(u16),
     White,
+    Mask,
+    /// Sprt texture id -1: the frame last shown (see `capture_prev_frame`).
+    PrevFrame,
 }
 
 #[derive(Clone, Debug)]
 struct DrawItem {
     tex: DrawTextureKey,
+    /// `PrimSetBlend(id, 1)`: SRCALPHA/ONE instead of SRCALPHA/INVSRCALPHA.
+    additive: bool,
     vertex_range: std::ops::Range<u32>,
 }
 
@@ -55,6 +60,12 @@ pub struct GpuPrimRenderer {
     root0_draw_end: usize,
     graph_cache: HashMap<u16, GraphGpuEntry>,
     white: GpuTexture,
+    mask_frame: super::mask_dissolve::MaskDissolveFrame,
+    mask_texture: Option<GraphGpuEntry>,
+    /// The frame last shown, for Sprt texture id -1; copied each frame one is drawn.
+    prev_frame: Option<RenderTarget>,
+    /// Whether the draw list built last samples `prev_frame`.
+    wants_prev_frame: bool,
 
     // Debug HUD: prim tile preview (opt-in via env)
     debug_tiles: Vec<DebugPrimTile>,
@@ -126,6 +137,10 @@ impl GpuPrimRenderer {
             root0_draw_end: 0,
             graph_cache: HashMap::new(),
             white,
+            mask_frame: Default::default(),
+            mask_texture: None,
+            prev_frame: None,
+            wants_prev_frame: false,
 
             debug_tiles: Vec::new(),
             debug_tiles_enabled: false,
@@ -161,6 +176,15 @@ impl GpuPrimRenderer {
         Some((e.generation, e.texture.raw_view(), e.texture.size()))
     }
 
+    /// Whether a mask dissolve needs the frame last shown (`set_mask_snapshot`) before `rebuild`.
+    pub fn mask_wants_snapshot(&self, motion: &MotionManager) -> bool {
+        self.mask_frame.wants_snapshot(motion)
+    }
+
+    pub fn set_mask_snapshot(&mut self, motion: &MotionManager, frame: image::RgbaImage) {
+        self.mask_frame.set_snapshot(motion, frame);
+    }
+
     pub fn remove_graph_cache(&mut self, graph_id: u16) {
         self.graph_cache.remove(&graph_id);
     }
@@ -168,9 +192,31 @@ impl GpuPrimRenderer {
     fn prune_unloaded_graph_cache(&mut self, graphs: &[GraphBuff]) {
         self.graph_cache
             .retain(|graph_id, _| match graphs.get(*graph_id as usize) {
-                Some(graph) => graph.get_texture_ready() && graph.get_texture().is_some(),
+                Some(graph) => {
+                    graph.get_texture_ready()
+                        && (graph.get_texture().is_some() || graph.is_cpu_evicted())
+                }
                 None => false,
             });
+    }
+
+    /// Whether the GPU holds `graph_id` at `generation` (so its CPU copy may be evicted).
+    pub fn is_graph_uploaded(&self, graph_id: u16, generation: u64) -> bool {
+        self.graph_cache
+            .get(&graph_id)
+            .map_or(false, |e| e.generation == generation)
+    }
+
+    /// Pixel size of a graph's image; falls back to the GPU texture when CPU pixels are evicted.
+    fn graph_pixel_size(&self, graph_id: u16, g: &GraphBuff) -> (u32, u32) {
+        match g.get_texture().as_ref() {
+            Some(img) => img.dimensions(),
+            None if g.is_cpu_evicted() => self
+                .graph_cache
+                .get(&graph_id)
+                .map_or((0, 0), |e| e.texture.size()),
+            None => (0, 0),
+        }
     }
 
     fn reload_debug_tile_cfg(&mut self) {
@@ -269,6 +315,7 @@ impl GpuPrimRenderer {
     /// Rebuild renderer draw lists from the current motion manager state.
     /// This matches the callsite in `app.rs`.
     pub fn rebuild(&mut self, resources: &GpuCommonResources, motion: &MotionManager) {
+        self.wants_prev_frame = false;
         self.build(resources, motion);
     }
 
@@ -450,6 +497,33 @@ impl GpuPrimRenderer {
         }
     }
 
+    /// Copy the frame last shown out of `target` (before the next one is drawn into it) when
+    /// the draw list built last has a Sprt with texture id -1. The original engine copies its
+    /// back buffer into that texture after every present.
+    pub fn capture_prev_frame(
+        &mut self,
+        resources: &GpuCommonResources,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &RenderTarget,
+    ) {
+        if !self.wants_prev_frame {
+            self.prev_frame = None;
+            return;
+        }
+        let stale = self.prev_frame.as_ref().map_or(true, |f| {
+            f.backing_size() != target.backing_size() || f.logical_size() != target.logical_size()
+        });
+        if stale {
+            self.prev_frame = Some(RenderTarget::new(
+                resources,
+                target.logical_size(),
+                target.backing_size(),
+                Some("rfvp prev frame"),
+            ));
+        }
+        target.encode_copy_to(encoder, self.prev_frame.as_ref().expect("prev frame allocated"));
+    }
+
     fn ensure_vb_capacity(&mut self, resources: &GpuCommonResources, needed_vertices: u32) {
         if needed_vertices <= self.vb_capacity {
             return;
@@ -585,6 +659,8 @@ impl GpuPrimRenderer {
     fn texture_bind_group(&self, key: DrawTextureKey) -> &TextureBindGroup {
         match key {
             DrawTextureKey::White => self.white.bind_group(),
+            DrawTextureKey::Mask => self.mask_texture.as_ref().expect("mask texture uploaded").texture.bind_group(),
+            DrawTextureKey::PrevFrame => self.prev_frame.as_ref().expect("prev frame captured").bind_group(),
             DrawTextureKey::Graph(id) => self
                 .graph_cache
                 .get(&id)
@@ -603,6 +679,7 @@ impl GpuPrimRenderer {
         uv1: Vec2,
         color: Vec4,
         tex: DrawTextureKey,
+        additive: bool,
     ) {
         let base = self.vertices.len() as u32;
 
@@ -636,6 +713,7 @@ impl GpuPrimRenderer {
         self.vertices.extend_from_slice(&[v0, v1, v2, v2, v1, v3]);
         self.draws.push(DrawItem {
             tex,
+            additive,
             vertex_range: base..base + 6,
         });
     }
@@ -690,7 +768,15 @@ impl GpuPrimRenderer {
 
         let mut draw_id = prim_id;
         let mut sprt = base_prim.get_sprt();
+        // A sprite chain that loops back on itself must not hang the frame.
+        let mut sprt_steps = 0u32;
         while sprt != -1 {
+            sprt_steps += 1;
+            if sprt_steps > 4096 {
+                log::error!("collect_tree: sprt chain loops under prim_id {prim_id}");
+                visit[prim_idx] = 2;
+                return;
+            }
             if sprt < 0 || sprt >= 4096 {
                 log::error!("collect_tree: invalid sprt id {sprt} under prim_id {prim_id}");
                 visit[prim_idx] = 2;
@@ -730,6 +816,39 @@ impl GpuPrimRenderer {
                 // No direct draw. Traversal handled below.
             }
 
+            PrimType::PrimTypeSprt if draw_prim.get_texture_id() == -1 => {
+                // The frame last shown, stretched over the screen (or the prim's W/H with
+                // attr bit 1). The whole frame is always sampled; U/V are not used.
+                let attr = draw_prim.get_attr();
+                let (mut w, mut h) = (self.virtual_size.0 as f32, self.virtual_size.1 as f32);
+                if (attr & 1) != 0 {
+                    w = draw_prim.get_w() as f32;
+                    h = draw_prim.get_h() as f32;
+                }
+                if w > 0.0 && h > 0.0 && draw_alpha > 0.0 {
+                    let (pivot_x, pivot_y) = if (attr & 2) != 0 {
+                        (draw_prim.get_opx() as f32, draw_prim.get_opy() as f32)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let model = self.build_draw_model(
+                        &draw_prim, parent_x, parent_y, draw_x, draw_y, 0.0, 0.0, pivot_x,
+                        pivot_y, v3d_x, v3d_y, v3d_z,
+                    );
+                    self.wants_prev_frame = true;
+                    self.emit_sprite_vertices(
+                        model,
+                        w,
+                        h,
+                        vec2(0.0, 0.0),
+                        vec2(1.0, 1.0),
+                        vec4(1.0, 1.0, 1.0, draw_alpha),
+                        DrawTextureKey::PrevFrame,
+                        draw_prim.get_blend(),
+                    );
+                }
+            }
+
             PrimType::PrimTypeSprt => {
                 let tex_id = draw_prim.get_texture_id();
                 let graph_id = if tex_id >= 0 {
@@ -745,10 +864,7 @@ impl GpuPrimRenderer {
                         self.push_debug_tile(draw_id, graph_id, DebugPrimTileKind::Sprt, Some(g));
                         self.upload_graph_if_needed(resources, graph_id, g);
                         if self.graph_cache.contains_key(&graph_id) {
-                            let (tw, th) = match g.get_texture().as_ref() {
-                                Some(img) => img.dimensions(),
-                                None => (0, 0),
-                            };
+                            let (tw, th) = self.graph_pixel_size(graph_id, g);
                             if tw > 0 && th > 0 {
                                 let attr = draw_prim.get_attr();
                                 let use_rect = (attr & 1) != 0;
@@ -825,6 +941,7 @@ impl GpuPrimRenderer {
                                     uv1,
                                     color,
                                     DrawTextureKey::Graph(graph_id),
+                                    draw_prim.get_blend(),
                                 );
                             }
                         }
@@ -840,10 +957,7 @@ impl GpuPrimRenderer {
                         self.push_debug_tile(draw_id, graph_id, DebugPrimTileKind::Text, Some(g));
                         self.upload_graph_if_needed(resources, graph_id, g);
                         if self.graph_cache.contains_key(&graph_id) {
-                            let (tw, th) = match g.get_texture().as_ref() {
-                                Some(img) => img.dimensions(),
-                                None => (0, 0),
-                            };
+                            let (tw, th) = self.graph_pixel_size(graph_id, g);
                             if tw > 0 && th > 0 {
                                 let attr = draw_prim.get_attr();
                                 let use_rect = (attr & 1) != 0;
@@ -883,6 +997,7 @@ impl GpuPrimRenderer {
                                         uv1,
                                         color,
                                         DrawTextureKey::Graph(graph_id),
+                                        draw_prim.get_blend(),
                                     );
                                 }
                             }
@@ -948,10 +1063,7 @@ impl GpuPrimRenderer {
                                     if !self.graph_cache.contains_key(&graph_id) {
                                         continue;
                                     }
-                                    let (tw, th) = match g.get_texture().as_ref() {
-                                        Some(img) => img.dimensions(),
-                                        None => (0, 0),
-                                    };
+                                    let (tw, th) = self.graph_pixel_size(graph_id, g);
                                     if tw == 0 || th == 0 {
                                         continue;
                                     }
@@ -977,6 +1089,7 @@ impl GpuPrimRenderer {
                                         vec2(tile_w / tw as f32, tile_h / th as f32),
                                         color,
                                         DrawTextureKey::Graph(graph_id),
+                                        draw_prim.get_blend(),
                                     );
                                 }
                             }
@@ -988,8 +1101,7 @@ impl GpuPrimRenderer {
             PrimType::PrimTypeTile => {
                 let w = draw_prim.get_w() as f32;
                 let h = draw_prim.get_h() as f32;
-                let color_id = draw_prim.get_tile();
-                let c = color_manager.get_entry(color_id as u8);
+                let c = color_manager.tile_color(draw_prim.get_tile());
                 if w > 0.0 && h > 0.0 {
                     let color = vec4(
                         c.get_r() as f32 / 255.0,
@@ -1014,6 +1126,7 @@ impl GpuPrimRenderer {
                         vec2(0.5, 0.5),
                         color,
                         DrawTextureKey::White,
+                        draw_prim.get_blend(),
                     );
                 }
             }
@@ -1065,6 +1178,7 @@ impl GpuPrimRenderer {
     }
 
     /// Build geometry and draw items from the current primitive tree.
+    /// Each tree traversal uses its own bounded 4096-byte stack visitation buffer.
     pub fn build(&mut self, resources: &GpuCommonResources, motion: &MotionManager) {
         self.vertices.clear();
         self.draws.clear();
@@ -1080,7 +1194,7 @@ impl GpuPrimRenderer {
 
         // 1) draw root tree (slot 0) always
         {
-            let mut visit = vec![0u8; 4096];
+            let mut visit = [0u8; 4096];
             self.collect_tree(
                 resources,
                 prim_manager,
@@ -1098,6 +1212,28 @@ impl GpuPrimRenderer {
             );
         }
 
+        self.mask_frame.prepare(motion);
+        if let Some(image) = &self.mask_frame.image {
+            let generation = self.mask_frame.generation;
+            let updated = self.mask_texture.as_mut().map_or(false, |entry| {
+                if entry.generation == generation { return true; }
+                if entry.texture.update_rgba8(resources, image) {
+                    entry.generation = generation;
+                    true
+                } else { false }
+            });
+            if !updated {
+                self.mask_texture = Some(GraphGpuEntry {
+                    generation,
+                    // sRGB: the colors are a captured frame's (or black).
+                    texture: GpuTexture::new(resources, image, Some("dissolve_mask")),
+                });
+            }
+            self.emit_sprite_vertices(Mat4::IDENTITY,
+                self.virtual_size.0 as f32, self.virtual_size.1 as f32,
+                vec2(0.0,0.0), vec2(1.0,1.0), vec4(1.0,1.0,1.0,1.0), DrawTextureKey::Mask, false);
+        } else { self.mask_texture = None; }
+
         // Record the draw boundary for root=0 so the caller can insert overlays (e.g. dissolves)
         // between the main scene tree and the overlay/custom root tree.
         self.root0_draw_end = self.draws.len();
@@ -1105,7 +1241,7 @@ impl GpuPrimRenderer {
         // 2) draw optional overlay root if non-zero
         let root = prim_manager.get_custom_root_prim_id() as i16;
         if root != 0 {
-            let mut visit = vec![0u8; 4096]; // do NOT reuse visit; allow redraw
+            let mut visit = [0u8; 4096]; // do NOT reuse visit; allow redraw
             self.collect_tree(
                 resources,
                 prim_manager,
@@ -1136,7 +1272,13 @@ impl GpuPrimRenderer {
     ) {
         for item in items {
             let src = self.vb.vertex_source_slice(item.vertex_range.clone());
-            sprite_pipeline.draw(render_pass, src, self.texture_bind_group(item.tex), proj);
+            sprite_pipeline.draw_blended(
+                render_pass,
+                src,
+                self.texture_bind_group(item.tex),
+                proj,
+                item.additive,
+            );
         }
     }
 

@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 use std::path::{Component, Path, PathBuf};
 
 use crate::host_abi::v1::{
@@ -44,6 +45,8 @@ use crate::host_abi::v1::{
 };
 use crate::host_abi::{Handle, HandleRegistry};
 use crate::host_api::{
+    RfvpAssetFile, RfvpAssetSource, RfvpSaveStore, RfvpStorage, WallTime,
+
     AudioParams, AudioSampleFormat, AudioStreamDesc, AudioStreamId, BlendMode, ColorRgba,
     CommandBlendMode, DrawGlyphCmd, DrawImageCmd, DrawSolidCommand, DrawSpriteCommand,
     EncodedAudioKind, InputModifiers, KeyCode, PixelFormat, PointerButton, PortableTextureDesc,
@@ -122,9 +125,9 @@ struct HostPlatform {
 }
 
 impl HostPlatform {
-    fn new(assets: std::sync::Arc<dyn crate::host_api::RfvpAssetSource>) -> Self {
+    fn new(assets: Arc<dyn RfvpAssetSource>, saves: Arc<dyn RfvpStorage>) -> Self {
         Self {
-            filesystem: PlatformAssets(assets),
+            filesystem: PlatformAssets { assets: Arc::new(AssetStorage(assets)), saves },
             renderer: HostRenderer::default(),
             audio: HostAudio::default(),
             clock: HostClock::new(),
@@ -503,6 +506,19 @@ impl RfvpClock for HostClock {
     fn ticks_us(&mut self) -> u64 {
         self.now_us
     }
+
+    fn wall_time(&mut self) -> Option<WallTime> {
+        use chrono::{Datelike, Timelike};
+        let now = chrono::Local::now();
+        Some(WallTime {
+            year: now.year().try_into().ok()?,
+            month: now.month() as u8,
+            day: now.day() as u8,
+            day_of_week: now.weekday().num_days_from_sunday() as u8,
+            hour: now.hour() as u8,
+            minute: now.minute() as u8,
+        })
+    }
 }
 
 struct HostFileSystem {
@@ -554,17 +570,20 @@ impl RfvpFile for HostFile {
     }
 }
 
-struct PlatformAssets(std::sync::Arc<dyn crate::host_api::RfvpAssetSource>);
+struct PlatformAssets {
+    assets: Arc<AssetStorage>,
+    saves: Arc<dyn RfvpStorage>,
+}
 
 impl RfvpFileSystem for PlatformAssets {
-    type File = crate::host_api::RfvpAssetFile;
+    type File = RfvpAssetFile;
 
     fn open(&mut self, path: &str) -> RfvpResult<Self::File> {
-        self.0.open(path)
+        self.assets.open(path)
     }
 
     fn metadata(&mut self, path: &str) -> RfvpResult<RfvpFileInfo> {
-        self.0.metadata(path)
+        self.assets.0.metadata(path)
     }
 
     fn enumerate_by_extension(
@@ -573,7 +592,113 @@ impl RfvpFileSystem for PlatformAssets {
         extension: &str,
         visitor: &mut dyn FnMut(&str, RfvpFileInfo) -> RfvpResult<()>,
     ) -> RfvpResult<()> {
-        self.0.enumerate(root, extension, visitor)
+        self.assets.0.enumerate(root, extension, visitor)
+    }
+
+    fn game_files(&mut self) -> Option<Arc<dyn RfvpStorage>> {
+        Some(self.assets.clone())
+    }
+
+    fn storage(&mut self) -> Option<Arc<dyn RfvpStorage>> {
+        Some(self.saves.clone())
+    }
+}
+
+struct AssetStorage(Arc<dyn RfvpAssetSource>);
+
+impl RfvpStorage for AssetStorage {
+    fn open(&self, path: &str) -> RfvpResult<RfvpAssetFile> {
+        self.0.open(path)
+    }
+
+    fn read(&self, path: &str) -> RfvpResult<Vec<u8>> {
+        self.open(path)?.read_to_vec(usize::MAX)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.0.metadata(path).is_ok_and(|info| info.kind == RfvpFileKind::File)
+    }
+
+    fn list(&self, dir: &str) -> RfvpResult<Vec<String>> {
+        self.0.list_files(dir)
+    }
+
+    fn write(&self, _: &str, _: &[u8]) -> RfvpResult<()> {
+        Err(RfvpError::Unsupported)
+    }
+
+    fn remove(&self, _: &str) -> RfvpResult<()> {
+        Err(RfvpError::Unsupported)
+    }
+}
+
+struct SaveStorage(Arc<dyn RfvpSaveStore>);
+
+fn save_key(path: &str) -> RfvpResult<&str> {
+    let key = path.strip_prefix("save/").ok_or(RfvpError::InvalidArgument)?;
+    if key.is_empty() || matches!(key, "." | "..") || key.contains(['/', '\\', ':', '\0']) {
+        return Err(RfvpError::InvalidArgument);
+    }
+    Ok(key)
+}
+
+impl RfvpStorage for SaveStorage {
+    fn read(&self, path: &str) -> RfvpResult<Vec<u8>> {
+        self.0.read(save_key(path)?)
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> RfvpResult<()> {
+        self.0.write(save_key(path)?, bytes)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        save_key(path).ok().is_some_and(|key| {
+            self.0.list().is_ok_and(|files| files.iter().any(|file| file == key))
+        })
+    }
+
+    fn remove(&self, path: &str) -> RfvpResult<()> {
+        self.0.remove(save_key(path)?)
+    }
+
+    fn list(&self, dir: &str) -> RfvpResult<Vec<String>> {
+        if dir == "save" {
+            self.0.list()
+        } else {
+            Err(RfvpError::NotFound)
+        }
+    }
+}
+
+struct DirectorySaveRoot(crate::host_api::std_fs::StdDir);
+
+impl RfvpStorage for DirectorySaveRoot {
+    fn read(&self, path: &str) -> RfvpResult<Vec<u8>> {
+        self.0.read(save_key(path)?)
+    }
+
+    fn read_prefix(&self, path: &str, max_len: usize) -> RfvpResult<Vec<u8>> {
+        self.0.read_prefix(save_key(path)?, max_len)
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> RfvpResult<()> {
+        self.0.write(save_key(path)?, bytes)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        save_key(path).is_ok_and(|key| self.0.exists(key))
+    }
+
+    fn remove(&self, path: &str) -> RfvpResult<()> {
+        self.0.remove(save_key(path)?)
+    }
+
+    fn list(&self, dir: &str) -> RfvpResult<Vec<String>> {
+        if dir == "save" {
+            self.0.list("")
+        } else {
+            Err(RfvpError::NotFound)
+        }
     }
 }
 
@@ -610,6 +735,11 @@ impl crate::host_api::RfvpAssetSource for HostFileSystem {
                 RfvpFileKind::Other
             },
         })
+    }
+
+    fn list_files(&self, dir: &str) -> RfvpResult<Vec<String>> {
+        let storage = crate::host_api::std_fs::StdDir::new(self.resolve(dir)?);
+        storage.list("")
     }
 
     fn enumerate(
@@ -1099,7 +1229,7 @@ fn empty_audio_command(kind: u32, stream_id: u32) -> RfvpAudioCommandV1 {
     }
 }
 
-fn pending_audio_command(command: AudioCommand) -> PendingAudioCommand {
+fn pending_audio_command(command: AudioCommand) -> RfvpResult<PendingAudioCommand> {
     let mut payload = Vec::new();
     let mut output = empty_audio_command(0, 0);
     match command {
@@ -1108,6 +1238,12 @@ fn pending_audio_command(command: AudioCommand) -> PendingAudioCommand {
             output.stream_id = id.0;
             output.encoded_kind = encoded_audio_kind(kind);
             payload = bytes;
+        }
+        AudioCommand::LoadStream { id, kind, stream } => {
+            output.kind = RFVP_AUDIO_LOAD_ENCODED;
+            output.stream_id = id.0;
+            output.encoded_kind = encoded_audio_kind(kind);
+            payload = stream.read_all()?;
         }
         AudioCommand::CreateStream { id, desc } => {
             output.kind = RFVP_AUDIO_CREATE_STREAM;
@@ -1178,10 +1314,10 @@ fn pending_audio_command(command: AudioCommand) -> PendingAudioCommand {
         }
     }
     output.payload_size = payload.len();
-    PendingAudioCommand {
+    Ok(PendingAudioCommand {
         command: output,
         payload,
-    }
+    })
 }
 
 fn pointer_button(code: u32) -> Option<PointerButton> {
@@ -1518,10 +1654,11 @@ pub unsafe extern "C" fn rfvp_runtime_create(
             .map(PathBuf::from)
             .unwrap_or_else(|| Path::new(&game_root).join("save"));
 
-        let mut core = RfvpCore::new(RfvpCoreConfig::default());
-        core.set_save_dir(Some(save_dir));
-        let host = HostPlatform::new(std::sync::Arc::new(HostFileSystem::new(&game_root)));
-        match open_runtime(core, host, &game_root, nls) {
+        let host = HostPlatform::new(
+            Arc::new(HostFileSystem::new(&game_root)),
+            Arc::new(DirectorySaveRoot(crate::host_api::std_fs::StdDir::new(save_dir))),
+        );
+        match open_runtime(host, &game_root, nls) {
             Ok(handle) => {
                 unsafe { *out_runtime = handle };
                 RFVP_STATUS_OK
@@ -1537,17 +1674,16 @@ pub fn open_runtime_with_io(
     saves: std::sync::Arc<dyn crate::host_api::RfvpSaveStore>,
     nls: Nls,
 ) -> Result<u64, i32> {
-    let mut core = RfvpCore::new(RfvpCoreConfig::default());
-    core.set_host_io(assets.clone(), saves);
-    open_runtime(core, HostPlatform::new(assets), ".", nls)
+    let host = HostPlatform::new(assets, Arc::new(SaveStorage(saves)));
+    open_runtime(host, ".", nls)
 }
 
 fn open_runtime(
-    mut core: RfvpCore,
     mut host: HostPlatform,
     asset_root: &str,
     nls: Nls,
 ) -> Result<u64, i32> {
+    let mut core = RfvpCore::new(RfvpCoreConfig::default());
     let boot = RfvpBootConfig {
         asset_root,
         hcb_extension: "hcb",
@@ -1555,6 +1691,8 @@ fn open_runtime(
         max_manifest_entries: 16 * 1024,
         nls,
         require_default_font: false,
+        nls_override: Some(nls),
+        ..RfvpBootConfig::default()
     };
     if let Err(error) = core.boot(&mut host, boot) {
         let detail = core.last_error_detail().unwrap_or("no detail");
@@ -1589,7 +1727,7 @@ pub unsafe extern "C" fn rfvp_runtime_destroy(runtime: u64) {
             if let Some(mut runtime) = state.runtimes.remove(Handle::from_raw(runtime)) {
                 // The windowed app persists rfvp_global.bin from App::drop; mirror
                 // that here so flags/read-text survive host-runtime sessions.
-                runtime.core.flush_global_savedata();
+                runtime.core.save_global_if_changed(&mut runtime.host);
             }
         });
     });
@@ -1609,7 +1747,7 @@ pub unsafe extern "C" fn rfvp_runtime_step(runtime: u64, delta_ms: u32) -> i32 {
             }
             if runtime.core.exit_requested() && !runtime.exit_requested {
                 // Exit edge: persist global savedata like the windowed app's Drop does.
-                runtime.core.flush_global_savedata();
+                runtime.core.save_global_if_changed(&mut runtime.host);
             }
             runtime.exit_requested |= runtime.core.exit_requested();
             let mut audio_commands = Vec::new();
@@ -1984,7 +2122,9 @@ pub unsafe extern "C" fn rfvp_runtime_poll_audio_command(
             let Some(command) = runtime.audio_commands.pop_front() else {
                 return RFVP_STATUS_NO_COMMAND;
             };
-            let mut pending = pending_audio_command(command);
+            let Ok(mut pending) = pending_audio_command(command) else {
+                return RFVP_STATUS_ENGINE;
+            };
             pending.command.payload = pending.payload.as_ptr();
             runtime.pending_audio_command = Some(pending);
             let Some(pending) = runtime.pending_audio_command.as_ref() else {
@@ -2598,7 +2738,7 @@ mod tests {
             id: crate::host_api::AudioStreamId::bgm(3),
             kind: crate::host_api::EncodedAudioKind::Ogg,
             bytes: vec![1, 2, 3, 4],
-        });
+        }).unwrap();
 
         assert_eq!(pending.command.kind, RFVP_AUDIO_LOAD_ENCODED);
         assert_eq!(pending.command.stream_id, 3);

@@ -22,6 +22,8 @@ mod font;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod legacy_save_load_ui;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
+mod host_api;
+#[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod rendering;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod rfvp_audio;
@@ -33,6 +35,10 @@ mod script;
 mod subsystem;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod text_translation;
+#[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
+mod text_codec;
+#[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
+mod perf;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
 mod trace;
 #[cfg(all(not(feature = "no_std"), feature = "gpu-render"))]
@@ -91,6 +97,12 @@ struct CliArgs {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     text_hidpi: bool,
 }
+
+/// The allocator of the desktop app (this binary compiles its own copy of the modules, so it
+/// declares it like lib.rs does for the mobile libraries): see `ALLOCATOR` in lib.rs.
+#[cfg(all(feature = "mimalloc", not(feature = "no_std"), not(target_arch = "wasm32"), not(target_os = "uefi")))]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // use dhat;
 
@@ -206,7 +218,7 @@ mod tests {
     fn test_audio_system() {
         std::env::set_var("FVP_TEST", "1");
         let mut world = GameData::default();
-        let vfs = crate::subsystem::resources::vfs::Vfs::new(Nls::ShiftJIS).unwrap();
+        let vfs = crate::utils::file::desktop_vfs(Nls::ShiftJIS).unwrap();
         let buff = vfs.read_file("bgm/001").unwrap();
         // is oggs?
         assert!(
@@ -231,7 +243,7 @@ mod tests {
     fn test_audio_system_mix() {
         std::env::set_var("FVP_TEST", "1");
         let mut world = GameData::default();
-        let vfs = crate::subsystem::resources::vfs::Vfs::new(Nls::ShiftJIS).unwrap();
+        let vfs = crate::utils::file::desktop_vfs(Nls::ShiftJIS).unwrap();
         let buff = vfs.read_file("bgm/001").unwrap();
         let buff2 = vfs.read_file("bgm/002").unwrap();
         // is oggs?

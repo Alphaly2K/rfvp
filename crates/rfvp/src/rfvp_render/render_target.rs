@@ -179,6 +179,7 @@ impl RenderTarget {
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
+        super::mem_stats::add(&super::mem_stats::TARGET_BYTES, &super::mem_stats::TARGETS, w as u64 * h as u64 * 4);
         Self {
             texture,
             view,
@@ -212,6 +213,23 @@ impl RenderTarget {
 
     pub fn backing_size(&self) -> (u32, u32) {
         self.size
+    }
+
+    pub fn logical_size(&self) -> (u32, u32) {
+        self.logical_size
+    }
+
+    /// Encode a copy of this target's pixels into `dst`, which has the same backing size.
+    pub fn encode_copy_to(&self, encoder: &mut wgpu::CommandEncoder, dst: &RenderTarget) {
+        encoder.copy_texture_to_texture(
+            self.texture.as_image_copy(),
+            dst.texture.as_image_copy(),
+            wgpu::Extent3d {
+                width: self.size.0,
+                height: self.size.1,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     pub fn vertex_source<'a>(&'a self) -> VertexSource<'a> {
@@ -293,5 +311,12 @@ impl RenderTarget {
             bytes_per_row,
             padded_bytes_per_row,
         }
+    }
+}
+
+impl Drop for RenderTarget {
+    fn drop(&mut self) {
+        let (w, h) = self.size;
+        super::mem_stats::sub(&super::mem_stats::TARGET_BYTES, &super::mem_stats::TARGETS, w as u64 * h as u64 * 4);
     }
 }

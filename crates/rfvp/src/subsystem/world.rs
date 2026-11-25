@@ -55,9 +55,9 @@ use crate::subsystem::components::syscalls::saveload::{
     Load, SaveCreate, SaveData, SaveThumbSize, SaveWrite,
 };
 use crate::subsystem::components::syscalls::sound::{
-    AudioLoad, AudioPlay, AudioSilentOn, AudioSlientOn, AudioState, AudioStop, AudioType, AudioVol,
-    SoundLoad, SoundMasterVol, SoundPlay, SoundSilentOn, SoundSlientOn, SoundStop, SoundType,
-    SoundTypeVol, SoundVol, SoundVolume,
+    AudioLoad, AudioPlay, AudioSilentOn, AudioState, AudioStop, AudioType, AudioVol,
+    SoundLoad, SoundMasterVol, SoundPlay, SoundSilentOn, SoundStop, SoundType,
+    SoundTypeVol, SoundVol,
 };
 use crate::subsystem::components::syscalls::text::{
     TextBuff, TextClear, TextColor, TextFont, TextFontCount, TextFontGet, TextFontName,
@@ -69,7 +69,7 @@ use crate::subsystem::components::syscalls::thread::{
 };
 use crate::subsystem::components::syscalls::timer::{TimerGet, TimerSet, TimerSuspend};
 use crate::subsystem::components::syscalls::utils::{
-    BreakPoint, DebugMessage, FloatToInt, IntToText, Rand, SysAtSkipName, SysProjFolder,
+    BreakPoint, FloatToInt, IntToText, Rand, SysAtSkipName, SysProjFolder,
 };
 use crate::subsystem::components::syscalls::utils::{ExitMode, WindowMode};
 
@@ -92,13 +92,11 @@ use super::resources::input_manager::InputManager;
 use super::resources::save_manager::SaveManager;
 use super::resources::text_manager::FontEnumerator;
 
-use super::resources::color_manager::ColorManager;
 use super::resources::thread_wrapper::ThreadWrapper;
 use super::resources::timer_manager::TimerManager;
 use super::resources::vfs::Vfs;
 use super::resources::videoplayer::VideoPlayerManager;
 
-use crate::subsystem::components::syscalls::generated;
 use crate::subsystem::components::syscalls::Syscaller;
 #[cfg(feature = "old_school")]
 use core_maths::CoreFloat;
@@ -576,14 +574,27 @@ fn round_half_up(v: f32) -> i32 {
     }
 }
 
+/// The handler of a syscall, found once: the PlayStation's compiled script calls syscalls by
+/// index (crate::aot).
+#[cfg(feature = "psx_aot")]
+pub fn syscall_handler(name: &str) -> Option<&'static (dyn Syscaller + Send + Sync)> {
+    let table = SYSCALL_TBL.borrow();
+    let handler: *const (dyn Syscaller + Send + Sync) = table.get(name)?.as_ref();
+    // The table is made once and never changed after: its handlers live as long as the program.
+    Some(unsafe { &*handler })
+}
+
 impl VmSyscall for GameData {
     fn do_syscall(&mut self, name: &str, args: Vec<Variant>) -> anyhow::Result<Variant> {
         let result = SYSCALL_TBL.borrow().get(name).map_or_else(
             || {
+                #[cfg(feature="host-session")]
+                anyhow::bail!("unknown RFVP native syscall {name}");
+                #[cfg(not(feature="host-session"))]
                 log::error!("Syscall {} not found", name);
                 Ok(Variant::Nil)
             },
-            |syscall| syscall.call(self, args),
+            |syscall| syscall.call(self, &args),
         );
         result
     }

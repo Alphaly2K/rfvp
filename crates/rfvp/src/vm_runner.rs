@@ -1,3 +1,5 @@
+#[cfg(feature = "no_std")]
+use alloc::vec::Vec;
 use anyhow::Result;
 
 #[cfg(not(feature = "no_std"))]
@@ -17,6 +19,11 @@ macro_rules! uefi_vm_stage {
 #[cfg(not(target_os = "uefi"))]
 macro_rules! uefi_vm_stage {
     ($($arg:tt)*) => {};
+}
+
+/// The bytes of a save slot's file.
+fn read_slot_for_load(game: &GameData, slot: u32) -> Result<Vec<u8>> {
+    game.save_manager.read_slot_file(slot)
 }
 
 /// Drives the script VM (which is coroutine-based, not OS-thread based).
@@ -84,59 +91,55 @@ impl VmRunner {
             && !game.save_manager.has_pending_vm_snapshot()
         {
             uefi_vm_stage!("[UEFI] VmRunner::tick before capture_snapshot_v1 pre");
+            let started = crate::perf::start();
             let snap = self.tm.capture_snapshot_v1();
             game.save_manager.set_pending_vm_snapshot(snap);
+            crate::perf::stop(21, started);
             uefi_vm_stage!("[UEFI] VmRunner::tick after capture_snapshot_v1 pre");
         }
 
         // Process deferred load requests at a safe point (between VM ticks).
         uefi_vm_stage!("[UEFI] VmRunner::tick before take_load_request");
         if let Some(slot) = game.save_manager.take_load_request() {
-            #[cfg(feature = "no_std")]
-            {
-                let _ = slot;
-            }
-            #[cfg(not(feature = "no_std"))]
-            {
-                match game.save_manager.read_slot_bytes(slot) {
-                    Ok(bytes) => {
-                        let nls = game.get_nls();
-                        if let Err(e) = game
-                            .save_manager
-                            .load_slot_into_current_from_bytes(slot, nls, &bytes)
-                        {
+            match read_slot_for_load(game, slot) {
+                Ok(bytes) => {
+                    let nls = game.get_nls();
+                    if let Err(e) = game
+                        .save_manager
+                        .load_slot_into_current_from_bytes(slot, nls, &bytes)
+                    {
+                        log::error!(
+                            "load: failed to parse save header for slot {}: {:#}",
+                            slot,
+                            e
+                        );
+                    }
+
+                    match try_decode_state_chunk_v1(&bytes) {
+                        Ok(Some(s)) => {
+                            if let Err(e) = s.apply(game, &mut self.tm) {
+                                log::error!("load: apply SaveStateSnapshotV1 failed: {:#}", e);
+                            }
+                        }
+                        Ok(None) => {
+                            // No state chunk: header-only save (engine save, older rfvp save, or
+                            // one written by the other kind of build).
+                            log::warn!(
+                                "load: no state chunk found in slot {} (header-only load)",
+                                slot
+                            );
+                        }
+                        Err(e) => {
                             log::error!(
-                                "load: failed to parse save header for slot {}: {:#}",
+                                "load: failed to decode state chunk for slot {}: {:#}",
                                 slot,
                                 e
                             );
                         }
-
-                        match try_decode_state_chunk_v1(&bytes) {
-                            Ok(Some(s)) => {
-                                if let Err(e) = s.apply(game, &mut self.tm) {
-                                    log::error!("load: apply SaveStateSnapshotV1 failed: {:#}", e);
-                                }
-                            }
-                            Ok(None) => {
-                                // No RFVS chunk: header-only save (engine save or older rfvp save).
-                                log::warn!(
-                                    "load: no RFVS chunk found in slot {} (header-only load)",
-                                    slot
-                                );
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "load: failed to decode RFVS chunk for slot {}: {:#}",
-                                    slot,
-                                    e
-                                );
-                            }
-                        }
                     }
-                    Err(e) => {
-                        log::error!("load: failed to read save slot {slot}: {e:#}");
-                    }
+                }
+                Err(e) => {
+                    log::error!("load: failed to read save slot {}: {:#}", slot, e);
                 }
             }
 
@@ -204,8 +207,10 @@ impl VmRunner {
         // If a save capture is pending, snapshot VM state after the tick so the render thread
         // can serialize a consistent coroutine state for this frame.
         if game.save_manager.wants_vm_snapshot_capture() {
+            let started = crate::perf::start();
             let snap = self.tm.capture_snapshot_v1();
             game.save_manager.set_pending_vm_snapshot(snap);
+            crate::perf::stop(21, started);
         }
 
         #[cfg(not(feature = "no_std"))]
@@ -222,9 +227,11 @@ impl VmRunner {
             match req {
                 ThreadRequest::TextResume(id) => {
                     let mut st = self.tm.get_context_status(id);
-                    st.remove(ThreadState::CONTEXT_STATUS_TEXT);
-                    st.insert(ThreadState::CONTEXT_STATUS_RUNNING);
-                    self.tm.set_context_status(id, st);
+                    if st.contains(ThreadState::CONTEXT_STATUS_TEXT) {
+                        st.remove(ThreadState::CONTEXT_STATUS_TEXT);
+                        st.insert(ThreadState::CONTEXT_STATUS_RUNNING);
+                        self.tm.set_context_status(id, st);
+                    }
                 }
                 other => keep.push_back(other),
             }
@@ -298,6 +305,20 @@ impl VmRunner {
         }
     }
 
+    /// The PlayStation runs the compiled script (crate::aot), which handles the thread
+    /// requests after each syscall as the loop below does after each instruction.
+    #[cfg(feature = "psx_aot")]
+    fn run_one_context(
+        &mut self,
+        tid: u32,
+        game: &mut GameData,
+        parser: &mut Parser,
+    ) -> Result<()> {
+        self.tm.run(tid, game, parser);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "psx_aot"))]
     fn run_one_context(
         &mut self,
         tid: u32,
@@ -334,6 +355,8 @@ impl VmRunner {
             uefi_vm_stage!("[UEFI] run_one_context after dispatch tid={}", tid);
 
             if self.tm.get_contexct_should_exit(tid) {
+                game.thread_wrapper.cancel_text_requests(tid);
+                game.motion_manager.text_manager.cancel_sync_print_waits(tid);
                 self.tm.thread_exit(Some(tid));
                 break;
             }
@@ -349,7 +372,11 @@ impl VmRunner {
             // Drain all pending requests emitted by syscalls.
             while let Some(event) = game.thread_wrapper.pop() {
                 match event {
-                    ThreadRequest::Start(id, addr) => self.tm.thread_start(id, addr),
+                    ThreadRequest::Start(id, addr) => {
+                        game.thread_wrapper.cancel_text_requests(id);
+                        game.motion_manager.text_manager.cancel_sync_print_waits(id);
+                        self.tm.thread_start(id, addr);
+                    }
                     ThreadRequest::Wait(time) => {
                         self.tm.thread_wait(time);
                         must_yield = true;
@@ -379,11 +406,16 @@ impl VmRunner {
                     }
                     ThreadRequest::TextResume(id) => {
                         let mut st = self.tm.get_context_status(id);
-                        st.remove(ThreadState::CONTEXT_STATUS_TEXT);
-                        st.insert(ThreadState::CONTEXT_STATUS_RUNNING);
-                        self.tm.set_context_status(id, st);
+                        if st.contains(ThreadState::CONTEXT_STATUS_TEXT) {
+                            st.remove(ThreadState::CONTEXT_STATUS_TEXT);
+                            st.insert(ThreadState::CONTEXT_STATUS_RUNNING);
+                            self.tm.set_context_status(id, st);
+                        }
                     }
                     ThreadRequest::Exit(id) => {
+                        let target = id.unwrap_or(tid);
+                        game.thread_wrapper.cancel_text_requests(target);
+                        game.motion_manager.text_manager.cancel_sync_print_waits(target);
                         self.tm.thread_exit(id);
                         must_yield = true;
                     }
@@ -406,3 +438,7 @@ impl VmRunner {
         Ok(())
     }
 }
+
+#[cfg(all(test, not(feature = "no_std")))]
+#[path = "vm_runner/tests.rs"]
+mod tests;

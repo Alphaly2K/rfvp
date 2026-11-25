@@ -1,0 +1,13 @@
+name: Consoles (manual)
+
+# Automatic builds and releases run through Build Artifacts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  consoles:
+    uses: ./.github/workflows/console-artifacts.yml

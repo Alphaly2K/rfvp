@@ -55,7 +55,9 @@ pub fn parts_load(game_data: &mut GameData, id: &Variant, path: &Variant) -> Res
                 pm.unload_parts_keep_name(id as u8);
             }
             Action::Load { path, buff } => {
-                let _ = pm.load_parts(id as u16, &path, buff);
+                if let Err(err) = pm.load_parts(id as u16, &path, buff) {
+                    crate::perf::event(format_args!("parts load FAILED id={id} path={path:?}: {err:?}"));
+                }
             }
         }
         pm.next_free_id(id as u8);
@@ -118,10 +120,10 @@ pub fn parts_select(game_data: &mut GameData, id: &Variant, entry_id: &Variant) 
         if entry_id_u32 < 256 {
             if let Err(e) = game_data
                 .motion_manager
-                .draw_parts_to_texture(id as u8, entry_id_u32)
+                .draw_parts_to_texture(id as u8, entry_id_u32, &game_data.vfs)
             {
                 // IDA: draw failure is non-fatal; still cancels the motion slot.
-                let _ = e;
+                crate::perf::event(format_args!("parts select FAILED id={id} entry={entry_id_u32}: {e:?}"));
             }
         }
     }
@@ -273,7 +275,7 @@ pub fn parts_motion_test(game_data: &mut GameData, id: &Variant) -> Result<Varia
 
 pub struct PartsAssign;
 impl Syscaller for PartsAssign {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_assign(game_data, get_var!(args, 0), get_var!(args, 1))
     }
 }
@@ -283,7 +285,7 @@ unsafe impl Sync for PartsAssign {}
 
 pub struct PartsLoad;
 impl Syscaller for PartsLoad {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_load(game_data, get_var!(args, 0), get_var!(args, 1))
     }
 }
@@ -293,7 +295,7 @@ unsafe impl Sync for PartsLoad {}
 
 pub struct PartsMotion;
 impl Syscaller for PartsMotion {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_motion(
             game_data,
             get_var!(args, 0),
@@ -308,7 +310,7 @@ unsafe impl Sync for PartsMotion {}
 
 pub struct PartsMotionPause;
 impl Syscaller for PartsMotionPause {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_motion_pause(game_data, get_var!(args, 0), get_var!(args, 1))
     }
 }
@@ -318,7 +320,7 @@ unsafe impl Sync for PartsMotionPause {}
 
 pub struct PartsMotionStop;
 impl Syscaller for PartsMotionStop {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_motion_stop(game_data, &args[0])
     }
 }
@@ -328,7 +330,7 @@ unsafe impl Sync for PartsMotionStop {}
 
 pub struct PartsMotionTest;
 impl Syscaller for PartsMotionTest {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_motion_test(game_data, &args[0])
     }
 }
@@ -338,7 +340,7 @@ unsafe impl Sync for PartsMotionTest {}
 
 pub struct PartsRGB;
 impl Syscaller for PartsRGB {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_rgb(game_data, &args[0], &args[1], &args[2], &args[3])
     }
 }
@@ -348,7 +350,7 @@ unsafe impl Sync for PartsRGB {}
 
 pub struct PartsSelect;
 impl Syscaller for PartsSelect {
-    fn call(&self, game_data: &mut GameData, args: Vec<Variant>) -> Result<Variant> {
+    fn call(&self, game_data: &mut GameData, args: &[Variant]) -> Result<Variant> {
         parts_select(game_data, &args[0], &args[1])
     }
 }
